@@ -1,0 +1,621 @@
+---
+title: 'Liver - Seurat - alignment'
+author: "Jon Thompson, Pers lab"
+date: "`r Sys.time()`" 
+output:
+  html_notebook: 
+    df_print: paged
+    number_sections: yes
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  html_document:
+    df_print: paged
+    number_sections: yes
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+SingleCellExperiment: https://bioconductor.org/packages/release/bioc/vignettes/SingleCellExperiment/inst/doc/intro.html
+scmap: http://bioconductor.org/packages/release/bioc/vignettes/scmap/inst/doc/scmap.html
+
+# Setup 
+
+```{r}
+# Only once
+
+source("https://bioconductor.org/biocLite.R")
+suppressMessages(biocLite("scmap"))
+suppressMessages(biocLite("SingleCellExperiment"))
+suppressMessages(biocLite("biomaRt"))
+suppressMessages(biocLite("biomartr"))
+
+```
+
+## Load packages
+
+```{r}
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(Matrix))
+suppressPackageStartupMessages(library(parallel))
+suppressPackageStartupMessages(library(scmap))
+suppressPackageStartupMessages(library(SingleCellExperiment))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(biomartr))
+suppressPackageStartupMessages(library(doubletFinder))
+
+```
+
+## Source functions and set session parameters and constants
+
+```{r}
+source("/projects/jonatan/functions-src/functions_v2.2_dev1.R")
+
+options(stringsAsFactors = F)
+
+project_dir = "/projects/jonatan/tmp-liver/"
+RObjects_dir = paste0(project_dir, "/RObjects/")
+plots_dir = paste0(project_dir, "/plots/")
+log_dir = paste0(project_dir, "/log/")
+tables_dir = paste0(project_dir, "/tables/")
+
+data_prefix = "liver"
+
+flag_date = substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+n_cores = 10
+
+# For mapping mmusculus symbol - ensembl
+mapping_mm_filepath = "/projects/timshel/sc-genetics/sc-genetics/data/gene_annotations/Mus_musculus.GRCm38.90.gene_name_version2ensembl.txt.gz"
+# Synonyms for mmusculus symbol - ensembl mapping
+mapping_mm_synonyms_filepath = "/data/genetic-mapping/ncbi/Mus_musculus.gene_info_symbol2ensembl.gz"
+# For mapping hsapiens symbol - ensembl
+mapping_hs_filepath = "/projects/tp/tmp-bmi-brain/data/mapping/gene_annotation_hsapiens.txt.gz" # columns: ensembl_gene_id, entrezgene, hgnc_symbol
+# Orthology mapping
+mapping_hs_mm_filepath = "/projects/timshel/sc-genetics/sc-genetics/data/gene_annotations/gene_annotation.hsapiens_mmusculus_unique_orthologs.GRCh37.ens_v91.txt.gz"
+
+
+# Seurat clustering parameters
+n_PC = 40
+res.primary <- 0.8 # the primary resolution - will be used for cluster marker identification.
+res2calculate <- c(0.4, 0.6, 0.8, 1.2, 1.6, 2) # Alternative resolutions to calculate for FindClusters. OBS: res.primary must be included in res2calculate
+
+# For scmap
+n_features = (1:4)*20
+
+```
+
+# Analysis
+
+## Doublet detection 
+We use doubletFinder to detect doublets in each run
+https://www.biorxiv.org/content/biorxiv/early/2018/06/26/352484.full.pdf
+
+```{r}
+samples<-list.files("/data/sc-10x/data-runs/180511-perslab-immunometab/")
+rawdat<-samples[grep("[PF|FGF].*cells",samples)]
+list_mat<-list()
+for (sample in rawdat){
+  x<-sapply(strsplit(sample,"-"),"[",1)
+  list_mat[x]<-Read10X(paste0("/data/sc-10x/data-runs/170904-schwartz-fgf1/",sample,"/outs/filtered_gene_bc_matrices/mm10/"))
+}
+```
+
+
+## Data ingestion and pre-processing 
+
+### Load expression data into top-level environment
+
+```{r}
+mca.liver <- readRDS(file = "/projects/jonatan/tmp-liver/RObjects/mca_liver.rds")
+maca.liver <- load_obj(f= "/projects/jonatan/tmp-maca/RObjects/maca_liver.RData")
+#hs.liver.data_path <- "/data/sc-10x/data-runs/180511-perslab-immunometab/agg/liver/outs/filtered_gene_bc_matrices_mex/hg19/matrix.mtx"
+hs.liver <- readRDS(file="/projects/rikard/Liver/agg_liver_clusters.rds")
+#hs.liver <- read.csv(file=hs.liver.data_path, header = T, quote="")
+```
+
+### LogNormalise the data (just in case)
+
+```{r}
+mca.liver <- NormalizeData(mca.liver, display.progress = F)
+maca.liver <- NormalizeData(maca.liver, display.progress = F)
+hs.liver <- NormalizeData(hs.liver, display.progress = F)
+```
+
+### Find variable genes for PCA
+
+```{r}
+hs.liver <- FindVariableGenes(hs.liver, do.plot = T, display.progress = T)
+```
+
+### Run PCA on homo sapiens data
+
+```{r}
+hs.liver <- RunPCA(object = hs.liver, 
+                   pc.genes = hs.liver@var.genes, 
+                   pcs.compute=n_PC, 
+                   do.print = F)#, pcs.print = 1:5, genes.print = 5)
+
+# Draw elbow plot of PCs to identify a good cut-off for downstream analysis 
+PCElbowPlot(object = hs.liver, num.pc=n_PC)
+```
+
+### Set number of PCs to use for clustering. More rigourous methods exist (e.g. Jackstraw resampling) - see http://satijalab.org/seurat/pbmc3k_tutorial.html
+
+```{r}
+n_PC_cluster = 20
+```
+
+## Cluster cells with different resolution parameter
+
+From http://satijalab.org/seurat/pbmc3k_tutorial.html:
+
+The FindClusters function's resolution parameter sets the ‘granularity’ of the downstream clustering, with increased values leading to a greater number of clusters. We find that setting this parameter between 0.6-1.2 typically returns good results for single cell datasets of around 3K cells. **Optimal resolution often increases for larger datasets**. The clusters are saved in the object@ident slot.
+
+```{r}
+# Set up a cluster of processor cores for parallel computation
+# NB: We actually just stick with the res.0.6 clustering already done, no point in repeating for all cluster values.
+
+cl <- makeCluster(n_cores, type = "FORK", outfile = paste0(log_dir, "log_", data_prefix, "_FindClusters.txt"))
+
+# Run FindClusters in parallel using different resolution parameter values
+list_hs.liver <- parLapplyLB(cl, res2calculate, function(x) FindClusters(object = hs.liver, 
+                                                                       reduction.type = "pca", 
+                                                                       dims.use = 1:n_PC_cluster, 
+                                                                       print.output = T, 
+                                                                       save.SNN = T, 
+                                                                       resolution = x))
+
+stopCluster(cl)
+
+# Save all the cluster assignments as meta data in the original seurat object
+for (i in 1:length(res2calculate)) {
+  hs.liver <- AddMetaData(hs.liver, list_hs.liver[[i]]@ident, col.name = paste0("clust.res.", res2calculate[i]))
+}
+
+rm(list_hs.liver) # No need to have this massive list in session!invisible(gc()); invisible(R.utils::gcDLLs()); rm(cl)
+```
+
+### Do TSNE
+
+From http://satijalab.org/seurat/pbmc3k_tutorial.html:
+tSNE aims to place cells with similar local neighborhoods in high-dimensional space together in low-dimensional space. 
+As input to the tSNE, we suggest using the same PCs as input to the clustering analysis, although computing the tSNE based on scaled gene expression is also supported using the genes.use argument.
+
+```{r}
+# Compute the TSNE projections
+hs.liver <- RunTSNE(object = hs.liver, 
+                    reduction.use = "pca", 
+                    dims.use = 1:20, 
+                    do.fast = TRUE)
+```
+
+### Plot t-SNE
+
+```{r, fig.height=12, fig.width=12}
+for (id in grep("clust\\.res", colnames(hs.liver@meta.data), value=T)) {
+  hs.liver <- SetAllIdent(object=hs.liver, id = id)
+  TSNEPlot(object = hs.liver, do.label = T, title = id)
+}
+```
+
+## Map mouse genes to ensembl
+
+```{r}
+mapping_direct.mm = read.table(gzfile(mapping_mm_filepath),sep="\t",header=T)
+mapping_synonyms.mm = read.delim(gzfile(mapping_mm_synonyms_filepath),sep="\t",header=T)
+```
+
+### MACA
+```{r}
+# Create a mapping dataframe with 'hgcn_symbol' and 'ensembl' columns 
+# Step 1: direct mapping
+mapping.maca <- data.frame(hgcn_symbol = rownames(maca.liver@data))
+mapping.maca$ensembl <- mapping_direct.mm$ensembl_gene_id[match(mapping.maca$hgcn_symbol, mapping_direct.mm$gene_name_optimal)]
+
+# Step 2: map remaining using synonyms
+mapping.maca$ensembl[which(is.na(mapping.maca$ensembl)) ] = mapping_synonyms.mm$ensembl[ match( mapping.maca$hgcn_symbol[which(is.na(mapping.maca$ensembl))] , mapping_synonyms.mm$symbol) ]
+prop = round(sum(is.na(mapping.maca$ensembl))/nrow(mapping.maca),2)
+message(sprintf("Proportion not mapped: %s", prop))
+```
+
+#### MCA
+```{r}
+# Create a mapping dataframe with 'hgcn_symbol' and 'ensembl' columns 
+# Step 1: direct mapping
+mapping.mca <- data.frame(hgcn_symbol = rownames(mca.liver@data))
+mapping.mca$ensembl <- mapping_direct.mm$ensembl_gene_id[match(mapping.mca$hgcn_symbol, mapping_direct.mm$gene_name_optimal)]
+
+# Step 2: map remaining using synonyms
+mapping.mca$ensembl[which(is.na(mapping.mca$ensembl)) ] = mapping_synonyms.mm$ensembl[ match( mapping.mca$hgcn_symbol[which(is.na(mapping.mca$ensembl))] , mapping_synonyms.mm$symbol) ]
+prop = round(sum(is.na(mapping.mca$ensembl))/nrow(mapping.mca),2)
+message(sprintf("Proportion not mapped: %s", prop))    
+```
+
+
+### Map human genes to ensembl
+
+```{r}
+mapping_direct.hs = read.csv(gzfile(mapping_hs_filepath),sep="\t",header=T) # columns: ensembl_gene_id, entrezgene, hgnc_symbol
+# Step 1: direct mapping
+mapping.hs <- data.frame(hgcn_symbol = rownames(hs.liver@data))
+mapping.hs$ensembl <- mapping_direct.hs$ensembl_gene_id[match(mapping.hs$hgcn_symbol, mapping_direct.hs$hgnc_symbol)]
+
+prop = round(sum(is.na(mapping.hs$ensembl))/nrow(mapping.hs),2)
+message(sprintf("Proportion not mapped: %s", prop))
+```
+
+## Map the mouse ensembl genes to homo sapiens ensembl orthologs
+
+```{r}
+mapping_orthology = read.csv(gzfile(mapping_hs_mm_filepath),sep="\t",header=T, stringsAsFactors = F)
+```
+
+```{r}
+# MACA
+mapping.maca$ensembl.human <- mapping_orthology$ensembl_gene_id[match(mapping.maca$ensembl, mapping_orthology$mmusculus_homolog_ensembl_gene) ]
+prop = round(sum(is.na(mapping.maca$ensembl.human))/nrow(mapping.maca),2)
+message(sprintf("Proportion not mapped: %s", prop))
+```
+
+```{r}
+# # MCA
+mapping.mca$ensembl.human <- mapping_orthology$ensembl_gene_id[ match(mapping.mca$ensembl, mapping_orthology$mmusculus_homolog_ensembl_gene) ]
+prop = round(sum(is.na(mapping.mca$ensembl.human))/nrow(mapping.mca),2)
+message(sprintf("Proportion not mapped: %s", prop))
+```
+
+(Tried to map human to mouse ortholog - not any better)
+
+```{r}
+# mapping.hs$ensembl.mm <- mapping_orthology$mmusculus_homolog_ensembl_gene[match(mapping.hs$ensembl, mapping_orthology$ensembl_gene_id)] 
+# 
+# prop = round(sum(is.na(mapping.hs$ensembl.mm))/nrow(mapping.hs),2)
+# message(sprintf("Proportion not mapped: %s", prop))
+```
+
+For NAs, also try homology mapping using biomaRt
+
+```{r}
+# https://www.bioconductor.org/packages/3.3/bioc/vignettes/biomaRt/inst/doc/biomaRt.pdf
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+maca.biomaRt.homologue.mapping <- getLDS(attributes = c("ensembl_gene_id"),
+filters = "ensembl_gene_id", values = mapping.maca$ensembl, mart = mouse,
+attributesL = c("ensembl_gene_id"), martL = human)
+
+mca.biomaRt.homologue.mapping <- getLDS(attributes = c("ensembl_gene_id"),
+filters = "ensembl_gene_id", values = mapping.mca$ensembl, mart = mouse,
+attributesL = c("ensembl_gene_id"), martL = human)
+
+```
+
+```{r}
+# MACA
+mapping.maca$ensembl.human[is.na(mapping.maca$ensembl.human)] <- maca.biomaRt.homologue.mapping$Gene.stable.ID.1[match(mapping.maca$ensembl[is.na(mapping.maca$ensembl.human)], maca.biomaRt.homologue.mapping$Gene.stable.ID) ]
+
+prop = round(sum(is.na(mapping.maca$ensembl.human))/nrow(mapping.maca),2)
+message(sprintf("Proportion not mapped: %s", prop)) # a bit better
+```
+
+```{r}
+# MCA
+mapping.mca$ensembl.human[is.na(mapping.mca$ensembl.human)]  <- mca.biomaRt.homologue.mapping$Gene.stable.ID.1[match(mapping.mca$ensembl[is.na(mapping.mca$ensembl.human)], mca.biomaRt.homologue.mapping$Gene.stable.ID) ]
+
+prop = round(sum(is.na(mapping.mca$ensembl.human))/nrow(mapping.mca),2)
+message(sprintf("Proportion not mapped: %s", prop)) # a bit better 
+```
+
+## Perform the mapping
+
+```{r}
+hs.liver_ensembl_genes <- mapping.hs$ensembl[match(rownames(hs.liver@data), mapping.hs$hgcn_symbol)]
+hs.liver_ensembl_genes[is.na(hs.liver_ensembl_genes)] <- rownames(hs.liver@data)[is.na(hs.liver_ensembl_genes)]
+
+maca.liver_ensembl_hs_genes <- mapping.maca$ensembl.human[match(rownames(maca.liver@data), mapping.maca$hgcn_symbol)]
+# where the mapping failed, keep mouse gene as hgcn symbol in uppercase in case it has a human ortholog anyway
+maca.liver_ensembl_hs_genes[is.na(maca.liver_ensembl_hs_genes)] <- toupper(rownames(maca.liver@data)[is.na(maca.liver_ensembl_hs_genes)])
+
+mca.liver_ensembl_hs_genes <- mapping.mca$ensembl.human[match(rownames(mca.liver@data), mapping.mca$hgcn_symbol)]
+# where the mapping failed, keep mouse gene as hgcn symbol in uppercase in case it has a human ortholog anyway
+mca.liver_ensembl_hs_genes[is.na(mca.liver_ensembl_hs_genes)] <- toupper(rownames(mca.liver@data)[is.na(mca.liver_ensembl_hs_genes)])
+
+```
+
+## Set up test dataset: hs.liver 
+
+Set up separate sce object for each cluster
+
+```{r}
+invisible(gc()); invisible(R.utils::gcDLLs())
+rownames(hs.liver@data) = rownames(hs.liver@raw.data) = rownames(hs.liver@scale.data) = hs.liver_ensembl_genes
+
+cl <- makeCluster(n_cores, type = "FORK", outfile = paste0(log_dir, "log_", data_prefix, "_subset_hs.liver.txt"))
+
+hs.liver_subsets <- lapply( names(table(as.character(hs.liver@meta.data$res.0.6))), function(x) SubsetData(hs.liver, cells.use = colnames(hs.liver)[hs.liver@meta.data$res.0.6==x], do.clean = T))
+
+stopCluster(cl)
+
+invisible(gc()); invisible(R.utils::gcDLLs())
+```
+
+Create a singleCellExperiment object for each hs.liver cluster
+
+For each subset, try a range of values for n features (genes) to use in aligning with clusters in the reference dataset
+
+```{r}
+# with n_cores = 10 this takes 5 - 10 minutes 
+invisible(gc()); invisible(R.utils::gcDLLs())
+#port = sample(x=11000:11999, size = 1, replace = F),
+cl <- makeCluster(n_cores, type = "FORK",  outfile = paste0(log_dir, "log_", data_prefix, "_make_sce_hs.liver.txt"))
+
+hs.liver_subsets.sce <- lapply( hs.liver_subsets, 
+                                    function(x) {
+  #Note that the 'logcounts' is a standard name in these objects. In fact, the counts are log normalised ((log2(counts_j)*10000)/sum_i(counts_i))
+  hs.liver.sce <- SingleCellExperiment(assays=list(logcounts = as.matrix(x@data)), colData = list(colnames = colnames(x@data)), rowData = list(rownames = rownames(x@data)))
+  #Add rowdata - feature_symbol is needed for alignment
+  rm(x)
+  
+  rowData(hs.liver.sce)$feature_symbol <- rowData(hs.liver.sce)$rownames
+
+  list_hs.liver.sce = lapply(n_features, function(y) selectFeatures(hs.liver.sce, 
+                                                                suppress_plot=T, 
+                                                                n_features = y))
+  for (i in 1:length(n_features)) {
+  name <- paste0("scmap_features", i)
+  rowData(hs.liver.sce)[name] <- rowData(list_hs.liver.sce[[i]])$scmap_features
+  }
+
+  rm(list_hs.liver.sce)
+  return(hs.liver.sce) 
+  
+})
+
+stopCluster(cl)
+#invisible(gc())
+
+rm(hs.liver_subsets) # this takes up lots of space
+invisible(gc()); invisible(R.utils::gcDLLs()); rm(cl)
+```
+
+maca: Find features and indices (without subsetting)
+
+```{r, fig.height=12, fig.width=12}
+#Create a singleCellExperiment object
+maca.liver.sce <- SingleCellExperiment(assays=list(logcounts = as.matrix(maca.liver@data)), colData = list(colNames = colnames(maca.liver@data)), rowData = list(rownames = maca.liver_ensembl_hs_genes))
+#Add rowdata - feature_symbol is needed for alignment
+rowData(maca.liver.sce)$feature_symbol <- rowData(maca.liver.sce)$rownames
+#Add column (cellwise) metadata 
+colData(maca.liver.sce)$cell_type1 <- gsub(" ", "_", maca.liver@meta.data$cell_ontology_class)
+```
+
+maca: Select features
+
+```{r} 
+invisible(gc()); invisible(R.utils::gcDLLs())
+#Features highlighted with the red colour will be used in the futher analysis (projection).
+#Features are stored in the scmap_features column of the rowData slot of the input object. 
+cl <- makeCluster(n_cores, type = "FORK", outfile = paste0(log_dir, "log_", data_prefix, "_maca_sce_selectFeatures.liver.txt"))
+
+list_maca.liver.sce = lapply(n_features, function(y) selectFeatures(maca.liver.sce, 
+                                                                suppress_plot=T, 
+                                                                n_features = y))
+  
+stopCluster(cl)
+
+  for (i in 1:length(n_features)) {
+    name <- paste0("scmap_features", i)
+    rowData(maca.liver.sce)[name] <- rowData(list_maca.liver.sce[[i]])$scmap_features
+  }
+    
+  rm(list_maca.liver.sce)
+invisible(gc()); invisible(R.utils::gcDLLs()); rm(cl)
+```
+
+```{r}
+# The scmap-cluster index of a reference dataset is created by finding the median gene expression for each cluster. By default scmap uses the cell_type1 column of the colData slot in the reference to identify clusters. (Other columns can be manually selected by adjusting indexCluster's cluster_col parameter)
+
+list_maca.liver.sce <- lapply(1:length(n_features), function(i) {
+  index <- paste0("scmap_features",i)
+  rowData(maca.liver.sce)$scmap_features <- rowData(maca.liver.sce)[[index]]
+  return(indexCluster(maca.liver.sce))
+})
+
+```
+
+
+```{r} 
+#One can also visualise the index:
+
+for (m in list_maca.liver.sce) {
+  heatmap(as.matrix(metadata(m)$scmap_cluster_index))
+}
+```
+
+
+mca: Repeat above steps (without subsetting)
+
+```{r, fig.height=12, fig.width=12}
+#Create a singleCellExperiment object
+mca.liver.sce <- SingleCellExperiment(assays=list(logcounts = as.matrix(mca.liver@data)), colData = list(colNames = colnames(mca.liver@data)), rowData = list(rownames = mca.liver_ensembl_hs_genes))
+#Add rowdata - feature_symbol is needed for alignment
+rowData(mca.liver.sce)$feature_symbol <- rowData(mca.liver.sce)$rownames
+#Add column (cellwise) metadata 
+colData(mca.liver.sce)$cell_type1 <- gsub(" ", "_", mca.liver@meta.data$ClusterID)
+```
+
+mca: Select features
+
+```{r} 
+#Features highlighted with the red colour will be used in the futher analysis (projection).
+#Features are stored in the scmap_features column of the rowData slot of the input object. 
+
+#cl <- makeCluster(n_cores, type = "FORK", outfile = paste0(log_dir, "log_", data_prefix, "_mca_sce_selectFeatures.liver.txt"))
+list_mca.liver.sce = lapply( n_features, function(y) selectFeatures(mca.liver.sce, 
+                                                                suppress_plot=T, 
+                                                               n_features = y))
+#stopCluster(cl)
+
+for (i in 1:length(n_features)) {
+  name <- paste0("scmap_features", i)
+  rowData(mca.liver.sce)[name] <- rowData(list_mca.liver.sce[[i]])$scmap_features
+}
+  
+rm(list_mca.liver.sce)
+invisible(gc()); invisible(R.utils::gcDLLs()); rm(cl)
+```
+
+mca indexCluster
+
+```{r}
+# The scmap-cluster index of a reference dataset is created by finding the median gene expression for each cluster. By default scmap uses the cell_type1 column of the colData slot in the reference to identify clusters. (Other columns can be manually selected by adjusting indexCluster's cluster_col parameter)
+
+list_mca.liver.sce <- lapply( 1:length(n_features), function(i) {
+  index <- paste0("scmap_features",i)
+  rowData(mca.liver.sce)$scmap_features <- rowData(mca.liver.sce)[[index]]
+  return(indexCluster(mca.liver.sce))
+})
+
+```
+
+```{r} 
+#One can also visualise the index:
+for (m in list_mca.liver.sce) {
+  heatmap(as.matrix(metadata(m)$scmap_cluster_index))
+}
+```
+
+## Projection
+
+Once the scmap-cluster index has been generated we can use it to project our dataset to another.
+This can be done with one index at a time, but scmap also allows for simultaneous projection to multiple indexes if they are provided as a list:
+
+```{r}
+# hs.liver_subsets.sce is a list of subsets (cell cluster).  Each cluster has columns of rowData(hs.liver.sce)$scmap_features1, 2, ..., one for each n_features
+# list_maca.liver.sce and mca are lists of sce objects where the metadata(sce)$scmap_cluster_index is different, one set per n_features
+
+#cl <- makeCluster(n_cores, type = "FORK", outfile = paste0(log_dir, "log_", data_prefix, "_hs.liver_projection.txt"))
+
+list_list_scmapCluster_results <- lapply(hs.liver_subsets.sce, function(x) {
+                                        lapply(2:length(n_features), function(i) {
+                                          # iterate over features
+                                          feat <- paste0("scmap_features", i)
+                                          # for hs.liver, select the set of features stores in rowData and set it in position to be found by scmapCluster
+                                          rowData(x)$scmap_features <-  rowData(x)[[feat]]
+                                          
+                                          result <- scmapCluster(projection = x, 
+                                                                 index_list = list(
+                                                                  maca = metadata(list_maca.liver.sce[[i]])$scmap_cluster_index, 
+                                                                  mca = metadata(list_mca.liver.sce[[i]])$scmap_cluster_index))
+                                          return(result)})})
+  
+
+#stopCluster(cl)
+
+#invisible(gc()); invisible(R.utils::gcDLLs()); rm(cl)
+```
+
+## Results
+
+scmap-cluster projects the query dataset to all projections defined in the index_list. The results of cell label assignements are merged into one matrix:
+
+```{r}
+
+outstats_df <- data.frame(subset = rep(names(table(as.character(hs.liver@ident))), 
+                                       times = rep(length(n_features), 
+                                                   times= length(unique(hs.liver@ident)))), 
+                            n_features = n_features,
+                            prop.assign_maca = 0, 
+                            prop.assign_mca = 0,
+                            stringsAsFactors = F)
+
+for (i in 1:length(list_list_scmapCluster_results)) { # loop over cell clusters in test set to align
+  for (j  in 1:length(list_list_scmapCluster_results[[i]])) { # loop over n features
+    
+    outstats_df[[(i-1)*length(n_features)+j,'prop.assign_maca']] <- 1-sum(list_list_scmapCluster_results[[i]][[j]]$scmap_cluster_labs[,'maca']=="unassigned")/nrow(list_list_scmapCluster_results[[i]][[j]]$scmap_cluster_labs)
+
+    outstats_df[[(i-1)*length(n_features)+j,'prop.assign_mca']] <- 1-sum(list_list_scmapCluster_results[[i]][[j]]$scmap_cluster_labs[,'mca']=="unassigned")/nrow(list_list_scmapCluster_results[[i]][[j]]$scmap_cluster_labs)
+
+  }
+}
+
+write.csv(outstats_df, sprintf("%s%s_scmapCluster_out_stats_%s.csv", log_dir, data_prefix, flag_date), row.names=F)
+```
+
+Corresponding similarities are stored in the scmap_cluster_siml item:
+
+```{r, fig.height=10, fig.width=16}
+for (i in 1:length(list_list_scmapCluster_results)) {
+  for (j  in 1:length(list_list_scmapCluster_results[[i]])) {
+
+    pdf(sprintf("%s%s_scmapCluster_similarities_hist_cluster_%s_n_features_%s_%s.pdf", plots_dir, data_prefix, names(table(as.character(hs.liver@ident)))[i], n_features[j], flag_date ),h=10,w=16)
+    par(mfrow=c(1,2))
+    hist(list_list_scmapCluster_results[[i]][[j]]$scmap_cluster_siml[,'maca'],breaks = 100, main = paste0("hs.liver - MACA similarities, clust. res. ", res2calculate[i], ", n_features", n_features[j]))
+    hist(list_list_scmapCluster_results[[i]][[j]]$scmap_cluster_siml[,'mca'],breaks = 100, main = paste0("hs.liver - MCA similarities, clust. res. ", res2calculate[i], ", n_features", n_features[j]))
+    dev.off()
+  }
+}
+
+```
+
+
+scmap also provides combined results of all reference dataset (choose labels corresponding to the largest similarity across reference datasets):
+```{r}
+head(scmapCluster_results$combined_labs)
+```
+
+## Visualization
+The results of scmap-cluster can be visualized as a Sankey diagram to show how cell-clusters are matched (getSankey() function). Note that the Sankey diagram will only be informative if both the query and the reference datasets have been clustered, but it is not necessary to have meaningful labels assigned to the query (cluster1, cluster2 etc. is sufficient):
+
+
+```{r}
+
+for (i in 1:length(hs.liver_subsets.sce)) {
+  colData(hs.liver_subsets.sce[[i]])$cell_type1 <- res2calculate[i]
+}
+```
+
+```{r, fig.height=10, fig.width=16}
+
+# TODO : need to set "cell_type1" in liver SCE objects
+
+for (i in 1:length(list_list_scmapCluster_results)) {
+  for (j  in 1:length(list_list_scmapCluster_results[[i]])) {
+    
+    pdf(sprintf("%s%s_scmapCluster_Sankey_cluster_%s_n_features_%s_%s.pdf", plots_dir, data_prefix, names(table(as.character(hs.liver@ident)))[i], n_features[j], flag_date ),h=10,w=16)
+
+    par(mfrow=c(1,2))
+    
+    plot(
+      getSankey(
+        colData(hs.liver_subsets.sce[[j]])$cell_type1, 
+        list_list_scmapCluster_results[[i]][[j]]$scmap_cluster_labs[,'maca'],
+        plot_height = 400
+      )
+    )
+    
+    plot(
+      getSankey(
+        colData(hs.liver_subsets.sce[[j]])$cell_type1, 
+        list_list_scmapCluster_results[[i]][[j]]$scmap_cluster_labs[,'mca'],
+        plot_height = 400
+      )
+    )
+    
+    dev.off()
+    
+  }
+}
+
+
+```
+
+```{r}
+save.image(file=sprintf("%s%s_scmap_%s.RData", RObjects_dir, data_prefix, flag_date))
+```
+
+
+
