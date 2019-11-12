@@ -1,0 +1,126 @@
+---
+title: 'Liver - QC bulk data'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
+#library("Seurat")
+
+library("data.table")
+library("Matrix")
+library("parallel")
+#library("readr")
+#library("tidyverse")
+library("dplyr")
+library("ggplot2")
+library("here")
+library("corrr")
+library("irlba")
+
+#library("lme4")
+#library("WGCNA")
+#devtools::install_github(repo = "satijalab/seurat", ref = "develop")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+```
+
+
+generic project constants 
+
+```{r}
+#prefixData <- "aizarani"
+prefixData = "liver_moylan2013"
+prefixRun = "1"
+#prefixOut <- "SCT"
+prefixOut <- "QC"
+
+```
+
+## load data
+
+```{r}
+dt_datExpr <- fread(here("data", "moylan2013.norm.expr.csv.gz"))
+```
+
+```{r}
+dt_metadata <- fread(here("data", "moylan2013.metadata.csv"))
+```
+
+## Outlier check : PCA
+
+```{r}
+irlba_out <- irlba(A = as.matrix(dt_datExpr[,-c("gene")]), 
+                   nv = 3)
+
+```
+
+Check how the samples look on singular components 1 and 2, coloured by fibrosis
+
+```{r}
+df <- as.data.frame(irlba_out$v)
+df[["fibrosis"]] <- dt_metadata[["fibrosis"]]
+```
+
+```{r}
+ggplot(data = df, aes(x=V1, y=V2)) + 
+  geom_point(size=5, aes(colour=fibrosis)) 
+```
+
+Looks prettygood, no extreme outliers, either
+

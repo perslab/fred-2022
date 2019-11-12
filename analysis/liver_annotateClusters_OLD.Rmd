@@ -1,0 +1,138 @@
+---
+title: 'Liver project Seurat post-processing OLD'
+author: "Jon Thompson, Pers lab"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+---
+
+Tutorial: https://satijalab.org/seurat/mca.html
+
+# Setup 
+
+## Load packages
+
+```{r}
+
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(Matrix))
+suppressPackageStartupMessages(library(parallel))
+suppressPackageStartupMessages(library(readxl))
+```
+
+## Source functions and set session parameters and constants
+
+```{r}
+# change to submodule within project
+source("./perslab-sc-library/utility_functions.R")
+```
+
+```{r}
+
+dirProject = "/projects/jonatan/pub-perslab/18-liver-fred/"
+dirAnalysis = paste0(dirProject, "/analysis/")
+dirOutput = paste0(dirProject, "/output/")
+dirPlots = paste0(dirProject, "/plots/")
+dirLog = paste0(dirProject, "/log/")
+dirTables = paste0(dirProject, "/tables/")
+
+prefixData = "liver_perslab_align"
+prefixRun = "seurat_7"
+```
+
+# Analysis
+
+```{r}
+# load seurat obj
+```
+
+```{r}
+library(gridExtra)
+```
+
+```{r}
+
+cellMarkers <- list("Hepatocytes"=c("ALB","HAMP","ARG1","PCK1","AFP","BCHE"),
+                      "LSECs"=c("CALCRL","CD32B","VWF"),
+                      "Cholangiocytes"=c("KRT19","EPCAM","FXDY2","CLDN4","CLDN10",
+                                       "SOX9","MMP7","CXCL1","CFTR","TFF2","KRT7","CD24"),
+                      "Hepatic Stellate Cells"=c("ACTA2","COL1A1","TAGLN","COL1A2",
+                                                 "COL3A1","SPARC","RBP1","DCN","MYL9"),
+                      "Macrophages"=c("CD68","MARCO"),
+                      "ab T cells"=c("CD2","CD3D","TRAC","IL32","CD3E"),
+                      "gd T cells"=c("NKG7","FCGR3A","HOPX","GNLY"),
+                      "T cells"= c("CD4","CD8"),
+                      "NK cells"=c("GZMK","KLRF1","CCL3","CMC1"),
+                      "Plasma cells"=c("CD27","IGHG1"),
+                      "Mature B cells"=c("MS4A1","LTB","CD52","IGHD"),
+                      "Erythroid cells"=c("HBB","SLC25A37","CA1","ALAS2"))
+
+for (cellType in names(cellMarkers)) {
+  list_plots <- lapply(cellMarkers[[cellType]], function(markerGene) {
+    try({
+      FeaturePlot(object = seurat_obj, features.plot = markerGene,reduction.use = "tsne", no.legend = F,cols.use = c("grey92", "blue"))
+      ggsave(filename = paste0(dir_plots, prefix_test, "_", prefix_run, "_",cellType, "_", markerGene,"_markers_feautureplot_.pdf"), width = 15, height=12)
+      })
+    })
+  #grid.arrange(list_plots, nrow=1, ncol=length(list_plots))
+  
+}
+
+```
+
+```{r}
+for (cellType in names(cellMarkers)) {
+  #par(mfrow=c(1,length(cellMarkers[[cellType]])))
+   lapply(cellMarkers[[cellType]], function(markerGene) {
+    try({
+      pdf(file = paste0(dir_plots, prefix_test, "_", prefix_run, "_",cellType,"_",markerGene,"_histogram_.pdf"), width = 15, height=12)
+      plot(density(x = seurat_obj@raw.data[markerGene,]))
+      dev.off()
+      })
+    }) #grid.arrange(list_plots, nrow=1, ncol=length(list_plots))
+}
+```
+
+```{r}
+out<- sapply(cellMarkers, function(x) sapply(x, function(y) try(summary(seurat_obj@raw.data[y,]))))
+```
+
+```{r}
+cellMarkers_select <- list("LSECs"=c("CALCRL"),
+                      "Cholangiocytes"=c("TFF2","CD24"),
+                      "Hepatic Stellate Cells"=c("ACTA2"),
+                      "Macrophages"=c("CD68"),
+                      "ab T cells"=c("IL32"),
+                      "gd T cells"=c("NKG7","GNLY"),
+                      "T cells"= c("CD4"),
+                      "NK cells"=c("CCL3"),
+                      "Plasma cells"=c("IGHG1"),
+                      "Mature B cells"=c("CD52"),
+                      "Erythroid cells"=c("HBB"))
+```
+
+```{r}
+
+for (cellType in names(cellMarkers_select)) {
+  list_plots <- lapply(cellMarkers_select[[cellType]], function(markerGene) {
+    try({
+      FeaturePlot(object = seurat_obj, features.plot = markerGene,reduction.use = "tsne", no.legend = F,cols.use = c("grey92", "blue"))
+      ggsave(filename = paste0(dir_plots, prefix_test, "_", prefix_run, "_",cellType, "_", markerGene,"_markers_select_feautureplot_.pdf"), width = 15, height=12)
+      })
+    })
+  #grid.arrange(list_plots, nrow=1, ncol=length(list_plots))
+  
+}
+```
+
+```{r}
+# MarParland et al cell cluster annotation
+cluster_annot_ref <- list("1"="Hep_1","2"="Alpha_Beta_T_cells", "3"="Hep_2", "4"="Inflammatory_Macs", "5"="Hep_3","6"="Hep_4","7"="Plasma_cells","8"="NK_like_cells","9"="Gamma_delta_T_cells_1","10"="Non_inflammatory_Macs","11"="Periportal_LSECs","12"="Central_venous_LSECs","13"="Portal_endothelial_cells","14"="Hep_5","15"="Hep_6","16"="Mature_B_cells","17"="Cholangiocytes","18"="Gamma_delta_T_cells_2","19"="Erythroid_cells","20"="Hepatic_stellate_cells")
+```
+

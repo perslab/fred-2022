@@ -1,0 +1,205 @@
+---
+title: 'Liver project Seurat QC'
+author: "Jon Thompson, Pers lab"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+---
+
+See also previous script: ./liver_seurat.Rmd
+
+# Setup 
+
+## options
+
+```{r}
+
+options(warn=1, stringsAsFactors = F, use= "pairwise.complete.obs")
+```
+
+## Load packages
+
+```{r}
+ipak(c("Seurat", "dplyr", "Matrix", "readxl", "openxlsx", "here"))
+```
+
+## Source functions and set session parameters and constants
+
+```{r}
+# change to submodule within project
+source("./perslab-sc-library/utility_functions.R")
+```
+
+```{r}
+#
+dirProject = "/projects/jonatan/pub-perslab/18-liver-fred/"
+dirAnalysis = paste0(dirProject, "/analysis/")
+dirOutput = paste0(dirProject, "/output/")
+dirPlots = paste0(dirProject, "/plots/")
+dirLog = paste0(dirProject, "/log/")
+dirTables = paste0(dirProject, "/tables/")
+
+prefixData = "liver_perslab_align"
+prefixRun = "seurat_7"
+```
+
+## load data
+
+```{r}
+pathSeuratObj <- dir(path=dirRObjects, pattern = paste0(".*",prefixRun, ".*\\.RDS\\.gz"), full.names = T)
+seuratObj <- load_obj(pathSeuratObj)
+```
+
+
+#### add patient metadata 
+
+load data
+
+```{r}
+df_metadataMacparland <- read.csv("/projects/jonatan/tmp-liver/data/macParland_patient_metadata.csv", quote="", header = T)
+metadataPerslab <- read_xlsx("/projects/jonatan/tmp-liver/data/Liver_meta_data.xlsx", na="", col_names=T)
+df_metadataPerslab <- as.data.frame(metadataPerslab)
+seuratObj <- readRDS("/projects/jonatan/tmp-liver/RObjects/liver_perslab_macparland_align_seurat_4_all_seurat_obj.RDS.gz")
+```
+
+```{r}
+head(df_metadataMacparland)
+```
+
+align the data categories
+
+```{r}
+
+df_metadataMacparland[["Sex"]] <- ifelse(df_metadataMacparland[["Sex"]]=="M",yes=1,no=2)
+colnames(df_metadataMacparland)[3] <- "Ethnicity"
+df_metadataMacparland[["BMI_over_35"]] <- c(0,0,1,0,0)
+df_metadataMacparland[["BMI_over_50"]] <- c(0,0,0,0,0)
+df_metadataMacparland[["Alcohol_use"]] <- c(7,NA,2,8,NA)
+df_metadataMacparland[["NASH"]] <- c(NA,0,NA,0,0) 
+df_metadataMacparland[["ID"]] <- rownames(df_metadataMacparland)
+
+df_metadataPerslab[["Ethnicity"]] <- "Danish"
+df_metadataPerslab[["BMI"]] <- df_metadataPerslab[["BMI_baseline_calculated"]] 
+df_metadataPerslab[["Smoking"]] <- df_metadataPerslab[["Smoking_status_baseline"]]
+df_metadataPerslab[["Alcohol_use"]] <- df_metadataPerslab[["Alcoholintake_current"]]
+df_metadataPerslab[["NASH"]] <- ifelse(df_metadataPerslab[["NASH_according_to_FLIP"]]==1,1,0)
+df_metadataPerslab[["NASH"]][df_metadataPerslab[["NASH_according_to_FLIP"]]==3] <- 0.5 # transform NASH into more meaningful
+colnames(df_metadataPerslab)[2] <- "Age"
+```
+
+```{r}
+colsToInclude <- c("ID", "Age", "Sex", "Ethnicity", "BMI", "Smoking", "Alcohol_use",  "NASH")
+df_metadataCombined <- rbind(df_metadataMacparland[,match(colsToInclude, colnames(df_metadataMacparland))], df_metadataPerslab[,match(colsToInclude,colnames(df_metadataPerslab))])
+df_metadataCombined[["ID"]][1:5] <- paste0("P",df_metadataCombined[["ID"]][1:5],"TLH") 
+df_metadataCombined[["ID"]][6:15] <- paste0(df_metadataCombined[["ID"]][6:15],"L") 
+```
+
+```{r}
+write.csv(df_metadataCombined, file="/projects/jonatan/tmp-liver/data/metadataCombined.csv", row.names=F, quote=F)
+```
+
+20190912 Add missing patient to metadata
+
+```{r}
+path_metadataCombined <- here("data", "metadataCombined.csv")
+df_metadataCombined <- load_obj(path_metadataCombined)
+head(df_metadataCombined)
+```
+
+```{r}
+df_metadataFull <- openxlsx::read.xlsx(here("data", "perslab_metadata_full.xlsx"))
+df_metadataFull[0:5,0:5]
+```
+
+```{r}
+df_metadataCombined <- rbind(df_metadataCombined, rep(NA_character_, ncol(df_metadataCombined))) 
+
+df_metadataCombined[nrow(df_metadataCombined),"ID"] <- paste0(df_metadataFull$ID,"L")[!paste0(df_metadataFull$ID,"L") %in% df_metadataCombined$ID]
+```
+
+```{r}
+
+df_full_row_idx <- grep(gsub("L","",  df_metadataCombined$ID[nrow(df_metadataCombined)]), df_metadataFull$ID)
+
+df_metadataCombined[nrow(df_metadataCombined), "Age"] <- df_metadataFull[df_full_row_idx,"Age_at_baseline"]
+df_metadataCombined[nrow(df_metadataCombined), "Sex"] <-  df_metadataFull[df_full_row_idx,"Sex"]
+
+df_metadataCombined[nrow(df_metadataCombined), "Ethnicity"] <- "Danish"
+
+ df_metadataCombined[nrow(df_metadataCombined), "BMI"] <-
+   df_metadataFull[df_full_row_idx,"BMI_baseline_calculated"]
+ 
+df_metadataCombined[nrow(df_metadataCombined), "Smoking"] <-  df_metadataFull[df_full_row_idx,"Smoking_status_baseline"]
+
+df_metadataCombined[nrow(df_metadataCombined), "Alcohol_use"] <-  df_metadataFull[df_full_row_idx,"Alcoholintake_current"]
+
+```
+
+```{r}
+df_select_row_idx <- grep(df_metadataCombined$ID[nrow(df_metadataCombined)], df_metadataSelectAdd$ID)
+
+for (newVar in c("nas_sum","fibrosis_grade", "lobular_inflammation_grade")){
+  df_metadataCombined[nrow(df_metadataCombined), newVar] <-  df_metadataSelectAdd[df_select_row_idx,newVar]
+}
+```
+
+remove old column
+```{r}
+df_metadataCombined$NASH <- NULL
+
+df_metadataCombined
+```
+
+```{r}
+write.csv(df_metadataCombined, file=here("data", "metadataCombined.csv"), row.names=F, quote=F)
+```
+
+20190912 Add metadata to Seurat object
+
+```{r}
+path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
+
+seuratObj <- load_obj(path_seuratObj)
+```
+
+```{r}
+
+df_newmetadata_tmp <- data.frame(sample_ID=seuratObj$sample_ID)
+
+for (newVar in c("Age","Sex", "Ethnicity", "BMI", "Smoking", "Alcohol_use", "nas_sum", "fibrosis_grade", "lobular_inflammation_grade")){
+  df_newmetadata_tmp[[newVar]] <- df_metadataCombined[[newVar]][match(df_newmetadata_tmp$sample_ID, df_metadataCombined$ID)]
+}
+
+seuratObj <- Seurat::AddMetaData(metadata = df_newmetadata_tmp,object = seuratObj)
+```
+
+```{r}
+saveMeta(savefnc = saveRDS, object= seuratObj, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz")), compress="gzip")
+```
+
+
+
+# ```{r}
+# path_metadataCombinedCell <- here("data", "metadataCombinedCell.csv")
+# path_metadataSelectAdd <- here("data", "metadata_selected_tmp.xlsx")
+# 
+# df_metadataCombinedCell <- load_obj(path_metadataCombined)
+# df_metadataSelectAdd <- openxlsx::read.xlsx(colNames = T, rowNames=F, xlsxFile = path_metadataSelectAdd)
+# ```
+# 
+# ```{r}
+# df_metadataSelectAdd$ID <- paste0(df_metadataSelectAdd$ID, "L")
+# ```
+# 
+# ```{r}
+# for (newVar in colnames(df_metadataSelectAdd)[2:4]){ 
+#   df_metadataCombined[[newVar]] <- df_metadataSelectAdd[[newVar]][match(df_metadataCombined$ID,df_metadataSelectAdd$ID)]
+# }
+# ```
+# 
+

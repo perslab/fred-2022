@@ -1,0 +1,347 @@
+---
+title: 'Liver sc data - score gene module'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F,
+        use="pairwise.complete.obs",
+        warn=1,
+        verbose=F,
+        mc.cores=40# for parallel computation
+        )
+```
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pValThreshold = 0.05
+```
+
+## source utility functions
+
+```{r}
+source("./perslab-sc-library/utility_functions.R")
+```
+
+## Load packages
+
+```{r}
+#devtools::install_github(repo = "satijalab/seurat", ref = "develop") # dev version of Seurat
+
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(Matrix)
+library(parallel)
+library(readr)
+library(tidyr)
+library(AUCell)
+library(openxlsx)
+library(here)
+#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr",  "AUCell", "Oscope", "openxlsx", "here"))
+```
+
+## Set constants
+
+generic project constants 
+
+```{r}
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+prefixOut = "SCint"
+```
+
+## specific options for Seurat
+
+```{r}
+options(future.globals.maxSize = 8000 * 1024^2)
+
+```
+
+## load data
+
+```{r}
+pathSeuratObj <- dir(path=here("output"), pattern = paste0(".*",prefixRun, ".*\\.RDS\\.gz"), full.names = T)
+seuratObj <- load_obj(pathSeuratObj)
+```
+
+```{r}
+head(seuratObj@meta.data)
+```
+
+```{r}
+#seuratObj@active.assay <- "RNA"
+seuratObj@active.assay <- "SCT"
+Idents(seuratObj) <- seuratObj$cluster_perslab
+```
+
+## Evaluate Novo nordisk gene set enrichment
+
+### option 1: scaled data weighted by -log10(p) * LFC
+
+```{r}
+df_diffGenes <- openxlsx::read.xlsx(xlsxFile = here("data", "NASHdiffGenes.xlsx"))
+```
+
+```{r}
+df_diffGenes %>% dplyr::filter(.data=., meta_adjP<pValThreshold) %>% 
+  select(.data = .,  meta_Log2FC) -> vec_metaLog2FCsignif
+
+df_diffGenes %>% dplyr::filter(.data=., meta_adjP<pValThreshold) %>% 
+  select(.data = .,  meta_adjP) -> vec_adjPsignif
+
+(-log10(vec_adjPsignif) * vec_metaLog2FCsignif) %>% '/'(sum(.)) %>% '[['(1) -> vec_geneWeights # normalized to sum to 1
+
+names(vec_geneWeights) <- df_diffGenes %>% dplyr::filter(.data=., meta_adjP<pValThreshold) %>% 
+  select(.data = .,  GeneName) %>% '[['("GeneName")
+
+```
+
+```{r}
+#seuratObj@active.assay <- "RNA"
+seuratObj@active.assay <- "SCT"
+```
+
+```{r}
+seuratObj <- ScaleData(seuratObj)
+```
+
+
+```{r}
+vec_cellNASHscore <- matrix(data=vec_geneWeights, nrow=1) %*% seuratObj@assays$RNA@scale.data[rownames(seuratObj) %in% names(vec_geneWeights),] %>% as.numeric 
+
+names(vec_cellNASHscore)<- colnames(seuratObj)
+
+df_metaTmp <- data.frame("NASH_score" = vec_cellNASHscore, row.names=colnames(seuratObj))
+```
+
+```{r}
+seuratObj <- Seurat::AddMetaData(object = seuratObj,metadata = df_metaTmp)
+```
+
+```{r}
+seuratObj@active.assay <- "integrated"
+```
+
+```{r}
+
+min.cutoff = quantile(x = seuratObj@meta.data$NASH_score,probs = 0.25)
+
+p<-FeaturePlot(object = seuratObj, 
+               features=c("NASH_score"), 
+               blend = F, min.cutoff = min.cutoff, 
+               label = F, 
+               split.by = "sample_ID")
+saveMeta(savefnc=ggsave, plot=p,filename = paste0(dirPlots, prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_NASHscore_scaled_grid_featureplot.pdf"), width=50, height=8, limitsize=F)
+
+p<-FeaturePlot(object = seuratObj, 
+               features=c("NASH_score"), 
+               blend = F, min.cutoff = min.cutoff, 
+               label = F)
+saveMeta(savefnc=ggsave, plot=p,filename = paste0(dirPlots, prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_NASHscore_scaled_featureplot.pdf"), width=10, height=8, limitsize=F)
+```
+
+## Use Seurat AddModuleScore 
+* This method uses Normalized rather than scaled expression data
+* it adjusts using pools of mean expression as reference (?)
+* the gene set cannot have a set of weights
+
+```{r}
+# Tirosh et al, Science (2016)
+seuratObj <- Seurat::AddModuleScore(object=seuratObj, 
+                                    features=list("NASH_SeuratModScore" =names(vec_geneWeights)), 
+                                    pool = NULL, 
+                                    nbin = 24, 
+                                    ctrl = 100,
+                                    k = FALSE, 
+                                    assay = "RNA", 
+                                    name = "NASH_SeuratModScore", 
+                                    seed = randomSeed)
+
+```
+
+```{r}
+seuratObj@active.assay <- "integrated"
+```
+
+```{r}
+min.cutoff = quantile(x = seuratObj@meta.data$NASH_SeuratModScore,probs = 0.25)
+
+p<-FeaturePlot(object = seuratObj, 
+               features="NASH_SeuratModScore1", 
+               blend = F, min.cutoff = min.cutoff, 
+               label = F, 
+               split.by = "sample_ID")
+saveMeta(savefnc=ggsave, plot=p,filename = paste0(dirPlots, prefixData, "_", prefixRun, "_", seuratObj@active.assay, "_NASH_SeuratModScore_grid_featureplot.pdf"), width=50, height=8, limitsize=F)
+
+p<-FeaturePlot(object = seuratObj, 
+               features="NASH_SeuratModScore1", 
+               blend = F, min.cutoff = min.cutoff, 
+               label = F)
+saveMeta(savefnc=ggsave, plot=p,filename = paste0(dirPlots, prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_NASH_SeuratModScore_featureplot.pdf"), width=10, height=8, limitsize=F)
+```
+
+## AUCell
+
+AUCell allows to identify cells with active gene sets (e.g. signatures, gene modules) in single-cell RNA-seq data. In brief, the workflow to run AUCell is based on three steps:
+
+* Build the rankings
+* Calculate the Area Under the Curve (AUC)
+* Set the assignment thresholds
+
+```{r}
+seuratObj@active.assay <- "SCT"
+```
+
+```{r}
+#cells_rankings <- AUCell_buildRankings(GetAssayData(seuratObj, "data"))
+cells_rankings <- AUCell_buildRankings(GetAssayData(seuratObj, "counts"))
+```
+
+```{r}
+geneSets <- list(geneSet1=names(vec_geneWeights))
+```
+
+```{r}
+cells_AUC <- AUCell_calcAUC(geneSets, 
+                            cells_rankings,
+                            aucMaxRank=nrow(cells_rankings)*0.05)
+```
+
+````{r}
+par(mfrow=c(3,3))
+cells_assignment <- AUCell_exploreThresholds(cells_AUC, plotHist=TRUE, nCores=1, assign=TRUE)
+```
+
+```{r}
+df_metadataTmp <-  data.frame("NASH_cellsAUC"=getAUC(cells_AUC)[1,], 
+                              row.names = names(getAUC(cells_AUC)[1,]))
+seuratObj <- AddMetaData(object=seuratObj, 
+                         metadata=df_metadataTmp)
+```
+
+```{r}
+seuratObj@active.assay <- "integrated"
+```
+
+```{r}
+
+min.cutoff = quantile(x = seuratObj@meta.data$NASH_cellsAUC,probs = 0.25)
+
+p<-FeaturePlot(object = seuratObj, 
+               features="NASH_cellsAUC", 
+               blend = F, min.cutoff = min.cutoff, 
+               label = F, 
+               reduction="umap",
+               split.by = "sample_ID")
+saveMeta(savefnc=ggsave, plot=p,filename = here("plots", paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_NASH_cellsAUC_grid_featureplot.pdf")), width=50, height=8, limitsize=F)
+
+p<-FeaturePlot(object = seuratObj, 
+               
+               features="NASH_cellsAUC", 
+               reduction="umap",
+               blend = F, min.cutoff = min.cutoff, 
+               label = F)
+saveMeta(savefnc=ggsave, plot=p,filename = here("plots", paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_NASH_cellsAUC_featureplot.pdf")), width=10, height=8, limitsize=F)
+
+```
+
+```{r}
+pdf(file = paste0(dirPlots, prefixData, "_", prefixRun, "_NASH_scores_scatterplots.pdf"), width = 12, height=12)
+p <- plot(seuratObj@meta.data[,grep("NASH_",colnames(seuratObj@meta.data))])
+dev.off()
+```
+
+## Dimplot
+```{r}
+dev.set(which = dev.next()) 
+DimPlot(object = seuratObj, group.by = "RNA_snn_res.1.2", label = T)
+saveMeta(savefnc=ggsave, plot=p,filename = paste0(dirPlots, prefixData, "_", prefixRun,  "_", seuratObj@active.assay, "_DimPlotClust1.2"), width=10, height=10)
+```
+
+```{r}
+seuratObj@active.assay <- "RNA"
+```
+
+
+# Find meta analysis genes in aizarani-nature-2019
+
+## AUCell
+
+```{r}
+seuratObjRef@active.assay <- "RNA"
+```
+
+```{r}
+cells_rankings <- AUCell_buildRankings(GetAssayData(seuratObjRef, "data"))
+```
+
+```{r}
+geneSets <- list(geneSet1=names(vec_geneWeights))
+```
+
+```{r}
+cells_AUC <- AUCell_calcAUC(geneSets, 
+                            cells_rankings,
+                            aucMaxRank=nrow(cells_rankings)*0.05)
+```
+
+```{r}
+df_metadataTmp <-  data.frame("NASH_cellsAUC"=getAUC(cells_AUC)[1,], 
+                              row.names = names(getAUC(cells_AUC)[1,]))
+seuratObjRef <- AddMetaData(object=seuratObjRef, 
+                         metadata=df_metadataTmp)
+```
+
+```{r}
+seuratObjRef <- RunTSNE(seuratObjRef, reduction = "pca", seed.use = randomSeed, perplexity=30, dims = 1:50)
+```
+
+```{r}
+
+min.cutoff = quantile(x = seuratObjRef@meta.data$NASH_cellsAUC,probs = 0.25)
+
+p<-FeaturePlot(object = seuratObjRef, 
+               features="NASH_cellsAUC", 
+               reduction = "tsne",
+               blend = F, 
+               min.cutoff = min.cutoff, 
+               label = T)
+saveMeta(savefnc=ggsave, plot=p,filename = "/data/pub-others/aizarani-nature-2019/output/aizarani_NASH_cellsAUC_featureplot.pdf", width=10, height=8, limitsize=F)
+```
+
+```{r}
+p<-DimPlot(object = seuratObjRef, 
+               reduction = "tsne",
+           dot.size=1.2,
+                #group.by=
+               label = T)
+saveMeta(savefnc=ggsave, plot=p,filename = "/data/pub-others/aizarani-nature-2019/output/aizarani_tsne_clust_plot.pdf", width=10, height=8, limitsize=F)
+```

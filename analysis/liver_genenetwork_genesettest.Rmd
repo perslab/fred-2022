@@ -1,0 +1,467 @@
+---
+title: 'Liver - gene network geneset tests'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
+#library("Seurat")
+
+library("data.table")
+library("Matrix")
+library("parallel")
+library("magrittr")
+#library("readr")
+#library("tidyverse")
+#library("dplyr")
+#library("ggplot2")
+library("here")
+#library("rlm")
+library("gerr")
+library("glmnet")
+
+library("qusage",lib.loc = "~/R/x86_64-pc-linux-gnu-library/")
+library("GO.db")
+library("gage") # provides GO genesets
+#library("msigdbr") # provides genesets as tbl
+#library("corrr")
+#library("lme4")
+#library("WGCNA")
+#devtools::install_github(repo = "satijalab/seurat", ref = "develop")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+
+#options(datatable.WhenJisSymbolThenCallingScope=TRUE)
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+genesetLengthMin = 5
+genesetLengthMax = 1000
+nRep = 10000 # bootstrap replicates
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+```
+
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+#prefixOut <- "SCT"
+prefixOut <- "moylan2013_wgcna_assoc"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module_merged"
+colCellCluster = "cell_cluster_merged"
+
+```
+
+## load data
+
+gene network data
+
+```{r}
+path_geneModule <- paste0(dirWGCNA_tables,"liver_perslab_int_wgcna2_cell_cluster_module_genes_subCellClusters_merged.csv.gz")
+dt_geneModule <- fread(path_geneModule)
+head(dt_geneModule)
+```
+
+gene network phenotype association results - to select associated networks for geneset tests
+
+```{r}
+path_dt_metadataAssoc = here("output", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_", flagDate, "_results.csv"))
+dt_metadataAssoc <- fread(path_dt_metadataAssoc)
+```
+
+get a vector of all the genes as a background for gene test
+
+```{r}
+seuratObj <- load_obj("/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz")
+```
+
+```{r}
+Seurat::DefaultAssay(seuratObj) = "RNA"
+
+vec_allGenes <- rownames(seuratObj)
+
+length(vec_allGenes)
+#[1] 36116
+```
+
+```{r}
+saveRDS(vec_allGenes, file = "/projects/jonatan/pub-perslab/18-liver-fred/output/vec_allGenes.RDS")
+
+rm(seuratObj)
+```
+
+### genesets
+
+#### download gene ontology genesets
+
+```{r}
+data(bods)
+
+list_list_vec_genesetsGO <- bods(species = "human", pkg.name=NULL, id.type = "eg")
+
+list_vec_genesetsGO <- list_list_vec_genesetsGO[[1]]
+```
+
+filter out very large or small genesets
+
+```{r}
+list_vec_genesetsGO %>% sapply(., length) %>% summary
+   # Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+   #  1.0     2.0     6.0    98.8    24.0 19659.0
+```
+
+```{r}
+list_vec_genesetsGO <- list_vec_genesetsGO[sapply(list_vec_genesetsGO, length) >= genesetLengthMin & sapply(list_vec_genesetsGO, length) <= genesetLengthMax]
+
+length(list_vec_genesetsGO)
+# [1] 12044
+```
+
+map the GO genesets from Entrez Gene to symbol
+
+https://www.rdocumentation.org/packages/gage/versions/2.22.0/topics/egSymb
+https://www.rdocumentation.org/packages/gage/versions/2.22.0/topics/eg2sym
+
+```{r}
+data(egSymb)
+
+list_vec_genesetsGO <- lapply(list_vec_genesetsGO, function(vec_geneset) {
+  vec_geneset <- eg2sym(eg=vec_geneset)
+  vec_geneset[!is.na(vec_geneset)]
+})
+```
+
+To get GO definitions we use GO.db package
+
+```{r}
+dt_GO = as.data.table(GO.db::GOTERM)
+```
+
+#### Download KEGG genesets
+
+```{r}
+data(kegg.gs)
+length(kegg.gs)
+# [1] 177
+# Hm it says 186 on the msigdb page http://software.broadinstitute.org/gsea/msigdb/genesets.jsp?collection=CP:KEGG
+
+list_vec_genesetsKEGG = kegg.gs; rm(kegg.gs)
+```
+
+```{r}
+data(egSymb)
+
+list_vec_genesetsKEGG <- lapply(list_vec_genesetsKEGG, function(vec_geneset) {
+  vec_geneset <- eg2sym(eg=vec_geneset)
+  vec_geneset[!is.na(vec_geneset)]
+})
+```
+
+# Analysis
+
+Make a list of vectors of genes in the WGCNA gene modules
+
+```{r}
+
+# very painful to iterate over row conditions. Ended up resorting to dplyr
+# see https://stackoverflow.com/questions/39005117/select-rows-in-data-table-using-a-variable
+# NB: enclosing condition in quote() didn't work
+
+list_vec_modGenes <- lapply(dt_metadataAssoc[,module,], function(module) {
+  x = dt_geneModule[,..colModule][[1]]
+  condition <- x==module
+  dt_geneModule %>% dplyr::filter(., condition) %>% dplyr::select(genes) %>% '[['(1)
+})
+
+names(list_vec_modGenes) <- dt_metadataAssoc[,module,]
+```
+
+Gene-set Enrichment with Regularized Regression - GERR 
+
+In the manuscript *Gene-set Enrichment with Regularized Regression*, we propose using regularized regression to model the relationship between $Y$, a binary dependent (target) variable indicating membership of genes in a set of genes of interest (GOI hereafter), and $\Omega$, a matrix of binary variables indicating membership of genes in gene-sets that are potentially overlapping or even identical with each other.
+
+Classically, binary target variables are often modeled by logistic regression. Alternatively, they can also be modeled by simple linear regression [@agresti_introduction_2019], even when the target variable is a dichotomy, namely either $0$ or $1$ [@hellevik_linear_2009]. 
+
+In this document, we illustrate how the two types of modelling can be constructed with `gerr`, the software package that we published along with the manuscript. In addition, we compare the results of elastic-net regression using either the linear regression or the logistic regression.
+
+### Reguarlized linear regression
+
+The link function of the generalized linear regression is specified by, the `family` parameter in the `glmnet` and `cv.glmnet` functions in the `glmnet` package. First, we construct a linear regression model, using the Gaussian family (`family="gaussian"`).
+
+
+Convert list of genesets to sparse binary matrix: 
+
+A binary background matrix whose columns are the pathways/gene sets and whose rows are all the genes from pathways/gene sets . It could be in sparse matrix format ((inherit from class "sparseMatrix" as in package Matrix) to save memory. For gene i and pathway j, the value of matrix(i,j) is 1 if gene i belonging to pathway j otherwise 0. 
+
+**Users could leave it as default value then it will use pre-collected gene_pathway_matrix from GO Ontology and REACTOME database. Otherwise, they could use their own customized gene_pathway_matrix**
+
+## Gene Ontology
+
+```{r}
+gene_pathway_matrixGO = sapply(list_vec_genesetsGO, function(vec_geneset) {
+  (vec_allGenes %in% vec_geneset) %>% as.numeric
+}, simplify = T)
+
+rownames(gene_pathway_matrixGO) <- vec_allGenes
+  
+dim(gene_pathway_matrixGO)
+#[1] 36116  12044
+```
+
+convert to sparse matrix format 
+
+```{r}
+gene_pathway_matrixGO %>% as(., "sparseMatrix") -> gene_pathway_matrixGO
+```
+
+run regularised regression gene test 
+
+```{r gaussianFit}
+list_gaussResGO <- lapply(list_vec_modGenes, function(vec_modGenes) {
+  regression_selected_pathways(gene_input=vec_modGenes, 
+                               gene_pathway_matrix = gene_pathway_matrixGO,
+                               family="gaussian",
+                               alpha=0.5)})
+```
+
+### gather the results in a data.table
+
+```{r}
+vec_module <- rep(names(list_gaussRes), sapply(list_gaussResGO, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
+```
+
+```{r}
+vec_cell_cluster <- dt_metadataAssoc[,cell_cluster,][match(vec_module,dt_metadataAssoc[,module,] )]
+```
+
+```{r}
+vec_coef = lapply(list_gaussResGO, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
+```
+
+```{r}
+vec_p.value_fisher = lapply(list_gaussResGO, function(x) x[["selected_pathways_fisher_pvalue"]])  %>% unlist(use.names = F)
+```
+
+```{r}
+vec_GOid <- lapply(list_gaussResGO, function(x) x[["selected_pathways_names"]] 
+                     %>%  names 
+                     %>% substr(.,start=1, stop = 10))  %>% unlist(use.names = F)
+```
+
+```{r}
+lapply(list_gaussResGO, function(x) {
+  x[["selected_pathways_names"]] %>% names %>% substr(., start=12, stop=1000)
+  })  %>% unlist(use.names = F) -> vec_GOterm
+```
+
+```{r}
+
+sapply(vec_GOid, function(id) {
+  dt_GO$Definition[dt_GO$go_id == id] %>% unique
+}) %>% unlist(use.names = F) -> vec_GOdef 
+
+```
+
+```{r}
+
+sapply(vec_GOid, function(id) {
+  dt_GO$Ontology[dt_GO$go_id == id] %>% unique
+}) %>% unlist(use.names = F) -> vec_ontology
+
+```
+
+```{r}
+dt_resultsGO <- data.table(
+  cell_cluster = vec_cell_cluster,
+  module = vec_module,
+  coef = vec_coef,
+  p.value_fisher = vec_p.value_fisher,
+  GO_id = vec_GOid,
+  GO_term = vec_GOterm,
+  GO_definition  = vec_GOdef,
+  GO_ontology = vec_ontology
+  )
+```
+
+order results by fisher test p.value 
+
+```{r}
+dt_resultsGO <- dt_resultsGO[order(p.value_fisher)]
+```
+
+## KEGG
+
+```{r}
+gene_pathway_matrixKEGG = sapply(list_vec_genesetsKEGG, function(vec_geneset) {
+  (vec_allGenes %in% vec_geneset) %>% as.numeric
+}, simplify = T)
+
+rownames(gene_pathway_matrixKEGG) <- vec_allGenes
+  
+dim(gene_pathway_matrixKEGG)
+#[1] 36116  177
+```
+
+convert to sparse matrix format 
+
+```{r}
+gene_pathway_matrixKEGG %>% as(., "sparseMatrix") -> gene_pathway_matrixKEGG
+```
+
+run regularised regression gene test 
+
+```{r gaussianFit}
+list_gaussResKEGG <- lapply(list_vec_modGenes, function(vec_modGenes) {
+  regression_selected_pathways(gene_input=vec_modGenes, 
+                               gene_pathway_matrix = gene_pathway_matrixKEGG,
+                               family="gaussian",
+                               alpha=0.5)})
+```
+
+### gather results in a data.table
+
+```{r}
+vec_moduleKEGG <- rep(names(list_gaussResKEGG), sapply(list_gaussResKEGG, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
+```
+
+```{r}
+vec_cell_clusterKEGG <- dt_metadataAssoc[,cell_cluster,][match(vec_moduleKEGG,dt_metadataAssoc[,module,] )]
+```
+
+```{r}
+vec_coefKEGG = lapply(list_gaussResKEGG, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
+```
+
+```{r}
+vec_p.value_fisherKEGG = lapply(list_gaussResKEGG, function(x) x[["selected_pathways_fisher_pvalue"]])  %>% unlist(use.names = F)
+```
+
+```{r}
+vec_KEGGid <- lapply(list_gaussResKEGG, function(x) x[["selected_pathways_names"]] 
+                     %>%  names 
+                     %>% substr(.,start=1, stop = 8))  %>% unlist(use.names = F)
+```
+
+```{r}
+lapply(list_gaussResKEGG, function(x) {
+  x[["selected_pathways_names"]] %>% names %>% substr(., start=10, stop=1000)
+  })  %>% unlist(use.names = F) -> vec_KEGGterm
+```
+
+```{r}
+dt_resultsKEGG <- data.table(
+  cell_cluster = vec_cell_clusterKEGG,
+  module = vec_moduleKEGG,
+  coef = vec_coefKEGG,
+  p.value_fisher = vec_p.value_fisherKEGG,
+  KEGG_id = vec_KEGGid,
+  KEGG_term = vec_KEGGterm
+  )
+```
+
+order results by fisher test p.value 
+
+```{r}
+dt_resultsKEGG <- dt_resultsKEGG[order(p.value_fisher)]
+```
+
+# write results to disc
+
+## GO 
+
+```{r}
+saveMeta(savefnc= fwrite, x = dt_resultsGO, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", flagDate,"_GOenrichmentResults.csv")))
+```
+
+also as xlsx for convenience
+
+```{r}
+openxlsx::write.xlsx(x=dt_resultsGO, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", flagDate,"_GOenrichmentResults.xlsx")))
+```
+
+## KEGG
+
+```{r}
+saveMeta(savefnc= fwrite, x = dt_resultsKEGG, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", flagDate,"_KEGGenrichmentResults.csv")))
+```
+
+also as xlsx for convenience
+
+```{r}
+openxlsx::write.xlsx(x=dt_resultsKEGG, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", flagDate,"_KEGGenrichmentResults.xlsx")))
+```
+
+also write out file with gene module info as xlsx to allow to query 
+
+```{r}
+openxlsx::write.xlsx(x=dt_geneModule, file = paste0(dirWGCNA_tables,"liver_perslab_int_wgcna2_cell_cluster_module_genes_subCellClusters_merged.xlsx"))
+```
+

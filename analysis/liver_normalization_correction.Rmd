@@ -1,0 +1,370 @@
+---
+title: 'Liver sc data normalization and de-confounding'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F,
+        use="pairwise.complete.obs",
+        warn=1,
+        verbose=F,
+        mc.cores=40# for parallel computation
+        )
+```
+
+## source utility functions
+
+```{r}
+source("./perslab-sc-library/utility_functions.R")
+```
+
+## Load packages
+
+```{r}
+#devtools::install_github(repo = "satijalab/seurat", ref = "develop") # dev version of Seurat
+
+library(Seurat)
+library("data.table")
+library(dplyr)
+library(ggplot2)
+library(Matrix)
+library(parallel)
+#library(readr)
+#library(tidyr)
+#library(AUCell)
+
+#library(Oscope)
+
+library(openxlsx)
+library(here)
+library("sva") #https://static-content.springer.com/esm/art%3A10.1186%2Fs13059-019-1700-9/MediaObjects/13059_2019_1700_MOESM4_ESM.html
+
+# https://www.bioconductor.org/packages/release/bioc/html/sva.html
+
+#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr",  "AUCell", "Oscope", "openxlsx", "here"))
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pValThreshold = 0.05
+pval.adjust.method = "BH"
+```
+
+generic project constants 
+
+```{r}
+prefixData <- "liver_perslab_int"
+prefixRun <- "seurat_7"
+prefixOut <- "SCTint"
+```
+
+## specific options and params
+
+```{r}
+options(future.globals.maxSize = 8000 * 1024^2)
+nCores=  20
+npcs=60
+res_primary=0.8
+```
+
+## load data
+
+```{r}
+pathSeuratObj <- "/nfsdata/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz"
+  #dir(path=here("output"), pattern = paste0(".*",prefixRun, ".*\\.RDS\\.gz"), full.names = T)
+seuratObj <- load_obj(pathSeuratObj)
+```
+
+```{r}
+head(seuratObj@meta.data)
+```
+
+```{r}
+seuratObj@active.assay <- "RNA"
+```
+
+## Cell-cycle analysis 
+See https://satijalab.org/seurat/cell_cycle_vignette.html
+
+```{r}
+# list_cellCycleGenes <- lapply(paths_cellCycleGenes, function(x) load_obj(x)[,1])
+# names(list_cellCycleGenes) <- names(paths_cellCycleGenes)
+
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase 
+list_cellCycleGenes <- list()
+list_cellCycleGenes[["s.genes"]] <- cc.genes$s.genes
+list_cellCycleGenes[["g2m.genes"]] <- cc.genes$g2m.genes
+```
+
+Compute cell cycle scores using provided genesets
+
+```{r}
+# First get rid of zero-expressed genes
+# seuratObj <- Seurat::CreateSeuratObject(counts=GetAssayData(seuratObj, slot= "counts"), 
+#                                              project= prefixData, 
+#                                              assay = "RNA", 
+#                                              min.cells = 5, # filtering genes is the only reason to make a new Seurat object
+#                                              min.features = 0,
+#                                              meta.data = seuratObj@meta.data)
+
+seuratObj <- Seurat::CellCycleScoring(object = seuratObj, 
+                               s.features = if (!is.null(list_cellCycleGenes[["s.genes"]])) list_cellCycleGenes[["s.genes"]] else NULL, 
+                               g2m.features = if (!is.null(list_cellCycleGenes[["g2m.genes"]])) list_cellCycleGenes[["g2m.genes"]] else NULL, 
+                              set.ident = F)
+
+seuratObj$CC.Difference <- seuratObj$S.Score - seuratObj$G2M.Score
+```
+
+Visualize cell cycle marker genes
+
+```{r}
+seuratObj@active.assay <- "integrated"
+```
+
+```{r, fig.width=12, fig.height= 10}
+p<-FeaturePlot(object = seuratObj, features=c("S.Score"), blend = F, label = F, split.by = "sample_ID")
+saveMeta(savefnc=ggsave, plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_S.Score_cellcycle_featPlot_splitClust.pdf")), width=40, height=8)
+
+p<-FeaturePlot(object = seuratObj, features=c("S.Score"), blend = F, label = F)
+saveMeta(savefnc=ggsave, plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_S.Score_cellcycle_featPlot.pdf")), width=12, height=12)
+
+p<-FeaturePlot(object = seuratObj, features=c("G2M.Score"), blend = F, label = F, split.by = "sample_ID")
+saveMeta(savefnc=ggsave, plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun, "_", seuratObj@active.assay, "_G2M.Score_cellcycle_featPlot_splitClust.pdf")), width=40, height=8)
+  
+p<-FeaturePlot(object = seuratObj, 
+               features=c("G2M.Score"), 
+               blend = F, 
+               label = F)
+saveMeta(savefnc=ggsave, plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_G2M.Score_cellcycle_featPlot.pdf")), width=12, height=12)
+
+p<-FeaturePlot(object = seuratObj, 
+               features=c("CC.Difference"),
+               blend = F, 
+               label = F, 
+               split.by = "sample_ID")
+saveMeta(savefnc=ggsave, plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_CC.Difference_cellcycle_featPlot_splitClust.pdf")), width=40, height=8)
+
+p <- FeaturePlot(object = seuratObj, 
+                 features=c("CC.Difference"), 
+                 blend = F, 
+                 label = F)
+saveMeta(savefnc=ggsave, plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_CC.Difference_cellcycle_featPlot")), width=12, height=12)
+```
+
+## Re-integrate data using sc-transform workflow
+
+## SCTransform, then integrate
+
+Regress out percent.mito and cell cycle difference
+
+```{r}
+seuratObj@active.assay <- "RNA"
+```
+
+
+```{r}
+# NV: alterantively, could run SCtransform **before** integrating  https://satijalab.org/seurat/v3.0/integration.html
+list_seuratObj <- SplitObject(seuratObj, split.by = "sample_ID")
+```
+
+```{r}
+for (i in 1:length(list_seuratObj)) {
+    list_seuratObj[[i]] <- SCTransform(list_seuratObj[[i]],
+                              vars.to.regress = c("percent.mito",  "CC.Difference"), #  Variables to regress out in a second non-regularized linear regression. For example, percent.mito. Default is NULL
+                              do.correct.umi=T,
+                              do.scale=F,
+                              do.center=T,
+                              return.only.var.genes =F,
+                              seed.use = randomSeed,#params$randomSeed,
+                              verbose=T)
+}
+```
+
+```{r}
+features <- Seurat::SelectIntegrationFeatures(object.list = list_seuratObj, nfeatures = 3000)
+
+list_seuratObj <- Seurat::PrepSCTIntegration(object.list = list_seuratObj,
+                                     anchor.features = features,
+                                     verbose = FALSE)
+```
+
+```{r}
+anchors <- Seurat::FindIntegrationAnchors(object.list = list_seuratObj, 
+                                  normalization.method = "SCT", 
+                                  anchor.features = features, 
+                                  verbose = FALSE)
+
+seuratObjIntegrated <- Seurat::IntegrateData(anchorset =anchors, 
+                                     normalization.method = "SCT", 
+                                     verbose = FALSE)
+```
+
+## First check what data looks like when doing PCA and UMAP on SC Transformed data
+
+
+```{r}
+
+# for some reason we can't use the SCT data computed on the dataset split by sample above. So redo SCT normalization on the whole dataset
+# Can we use vars.to.regress to remove batch effect? NO: We do not recommend using ScaleData for removing batch effects, for reasons discussed in https://www.nature.com/articles/nbt.4096. https://github.com/satijalab/seurat/issues/1351
+
+seuratObjIntegrated <- SCTransform(seuratObjIntegrated, 
+                                   assay = "RNA", 
+                                   new.assay.name = "SCTall", 
+                                   vars.to.regress = c("percent.mito",  "CC.Difference" ), #  Variables to regress out in a second non-regularized linear regression. For example, percent.mito. Default is NULL
+                                  do.correct.umi=T,
+                                  do.scale=F,
+                                  do.center=T,
+                                  return.only.var.genes =F,
+                                  seed.use = randomSeed,#params$randomSeed,
+                                  verbose=T)
+seuratObjIntegrated <- RunPCA(seuratObjIntegrated, assay="SCTall", npcs = npcs, seed.use = randomSeed)
+seuratObjIntegrated <- RunUMAP(object=seuratObjIntegrated, dims=1:npcs, reduction = "pca", assay=  "SCTall", seed.use = randomSeed)
+
+p1 <-DimPlot(seuratObjIntegrated,  
+             assay="SCTall",
+             reduction = 'umap', 
+             group.by = 'SCT_snn_res.0.8',
+             label = FALSE)
+
+saveMeta(savefnc= ggsave, plot= p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_UMAP_SCT_FindClusters.pdf")), width = 20, height=12)
+
+p1 <-DimPlot(seuratObjIntegrated,  
+             assay="SCTall",
+             reduction = 'umap', 
+             group.by = 'sample_ID',
+             label = FALSE)
+
+saveMeta(savefnc= ggsave, plot= p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_UMAP_SCT_sample_ID.pdf")), width = 20, height=12)
+```
+
+```{r}
+saveMeta(savefnc = saveRDS, object =seuratObjIntegrated, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "seuratObj.RDS.gz")), compress="gzip")
+```
+
+## standard clustering workflow on integrated data
+
+```{r}
+DefaultAssay(seuratObjIntegrated) <- "integrated"
+```
+
+```{r}
+
+seuratObjIntegrated <- Seurat::RunPCA(seuratObjIntegrated, 
+                                      assay = "integrated",
+                                      npcs = npcs, 
+                                      seed.use=randomSeed,
+                                      verbose = FALSE)
+```
+
+```{r}
+seuratObjIntegrated <- FindNeighbors(object = seuratObjIntegrated, dims= 1:npcs, verbose = T)
+seuratObjIntegrated <- FindClusters(object = seuratObjIntegrated, verbose = T,resolution =res_primary, random.seed = randomSeed)
+```
+
+```{r}
+seuratObjIntegrated <- RunUMAP(object=seuratObjIntegrated, dims=1:npcs, reduction = "pca", assay=  "SCT", seed.use = randomSeed)
+
+```
+
+```{r}
+p1 <-DimPlot(seuratObjIntegrated, 
+             reduction = 'umap', 
+             group.by = 'SCT_snn_res.0.8',
+             label = TRUE)
+
+saveMeta(savefnc= ggsave, plot= p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_UMAP_FindClusters.pdf")), width = 20, height=12)
+```
+
+```{r}
+p2 <- DimPlot(seuratObjIntegrated, 
+              reduction="umap",
+              group.by = c("sample_ID"),
+              label = T)
+
+saveMeta(savefnc=ggsave, plot =p2, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_UMAP_sampleID.pdf")), width=20, height=12)
+```
+
+## Find cluster markers 
+
+```{r}
+clusters = seuratObjIntegrated@meta.data[[paste0("SCT_snn_res.", res_primary)]] %>% table %>% names 
+Idents(seuratObjIntegrated) <-seuratObjIntegrated@meta.data[[paste0("SCT_snn_res.", res_primary)]]
+
+list_iterable = list("X"=clusters)
+fun = function(cluster) {tryCatch({
+  FindMarkers(seuratObjIntegrated ,  
+              #cells.1=colnames(seurat_obj)[Idents(seurat_obj)==cluster],
+              #cells.2=NULL,
+              ident.1 = cluster,
+              only.pos = T,
+              #ident.2 = clusters[clusters!=cluster],
+              test.use  ="MAST",
+              max.cells.per.ident=1000,
+              random.seed=randomSeed,
+              #latent.vars = if (!is.null(merge_specify) | !is.null(merge_group_IDs)) "sample_ID" else NULL,
+              verbose = T)
+}, 
+error = function(err) {
+  NA_character_
+})}
+list_markers=NULL
+list_markers <- lapply(FUN=fun, "X"=list_iterable[[1]])
+
+# add the gene and cluster as a column
+list_markers <- mapply(function(df_markers, cluster) {
+  if (!all(sapply(df_markers, is.na))) {
+    cbind("gene" = rownames(df_markers), "cluster"=rep(cluster, nrow(df_markers)), df_markers)
+  } else {
+    NA_character_
+  }
+},
+df_markers=list_markers, 
+cluster=names(table(Idents(seuratObjIntegrated))), SIMPLIFY=F)
+
+list_markers <- list_markers[!sapply(list_markers, function(markers) all(is.na(markers)))]
+df_markers <- Reduce(x=list_markers, f=rbind)
+rownames(df_markers) <- NULL
+```
+
+```{r}
+saveMeta(savefnc=openxlsx::write.xlsx, x = df_markers, file=here("data", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_clustermarkers.xlsx")))
+```
+
+save in order to transfer labels using a separate script 
+
+```{r}
+saveMeta(savefnc = saveRDS, object =seuratObjIntegrated, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "seuratObj.RDS.gz")), compress="gzip")
+```
+
+saveMeta(savefnc = saveRDS, object =seuratObj, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz")), compress="gzip")
+

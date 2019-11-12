@@ -1,0 +1,126 @@
+---
+title: 'Liver - Non-negative Matrix Factorization'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+
+library("Seurat")
+library("data.table")
+library("Matrix")
+library("parallel")
+library("magrittr")
+library("here")
+library("ccfindR")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+```
+
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+#prefixOut <- "SCT"
+prefixOut <- "NMF1"
+
+```
+
+## load data
+
+```{r}
+seuratObj <- readRDS("/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz")
+```
+
+```{r}
+mat_SCTcounts <- seuratObj@assays$SCT@counts
+```
+
+# Analysis
+
+## Data input
+ccfindR uses a S4 object 
+
+This class extends SingleCellExperiment class, adding extra slots for storing factorization outcomes. In particular, assays, rowData, and colData slots of SingleCellExperiment class are used to store RNA count matrix, gene, and cell annotation data frames, respectively. In the simplest initialization above, the named argument count is used as the count matrix and is equivalent to
+
+```{r}
+# create scNMFSet object
+
+sc <- scNMFSet(count = mat, rowData = data.frame(rownames(mat_SCTcounts)), colData = colnames(mat_SCTcounts))
+```
+
+By default, any row or column entirely consisting of zeros in counts and the corresponding elements in rowData and colData slots will be removed. This feature can be turned off by remove.zeros = FALSE.
+
+## Quality control #
+
+skip this part 
+
+## Rank determination
+
+Since we only approximate the likelihod function we can only find local optima
+
+We adopt the randomized initialization scheme, where the factor matrix elements are drawn from uniform distributions.
+
+The connectivity matrix 𝖢 is a symmetric n×n matrix with elements Cjl=1 if j and l cells belong to the same cluster and 0 otherwise. The cluster membership is dynamically checked by finding the row index k for which the coefficient matrix element Hkj is maximum for each cell indexed by j.
+

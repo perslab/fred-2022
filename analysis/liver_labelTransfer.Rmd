@@ -1,0 +1,957 @@
+---
+title: 'Liver - label transfer'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        mc.cores=40 # for parallel computation
+        ) 
+```
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pValThreshold = 0.05#params$pValThreshold
+```
+
+## Load packages
+
+```{r}
+#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
+library("Seurat")
+library("tidyverse")
+library("Matrix")
+library("parallel")
+library("here")
+#devtools::install_github(repo = "satijalab/seurat", ref = "develop")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set constants
+
+generic project constants 
+
+```{r}
+#prefixData <- "aizarani"
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+#prefixOut <- "SCT"
+prefixOut <- "SCTint"
+
+# naming convention:
+# <prefixData>_<prefixRun>_<prefixOut>_<outputType>_<params>_<params>_..._<date>.pdf
+
+```
+
+```{r}
+pathSeuratObjQuery <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
+
+#pathSeuratObjQuery = "/data/pub-others/aizarani-nature-2019/output/aizarani-nature-2018_1_seuratObj.RDS.gz"
+```
+
+```{r}
+#path_seuratObjRef <- "/data/pub-others/aizarani-nature-2019/output/aizarani-nature-2018_1_seuratObj.RDS.gz"
+path_seuratObjRef <- "/projects/jonatan/pub-perslab/18-liver-fred/data/macparland_seurat_obj3_Samples245.RDS.gz"
+
+# metadata column name of celltype annotation 
+celltypeAnnot = "Cluster_annot" # MacParland et al
+#celltypeAnnot="cluster" # Aizarani et al
+```
+
+Seurat constants
+
+```{r}
+npcs = 50
+minPredictionScore = 0.7
+```
+
+## load data
+
+```{r}
+seuratObjQuery <- load_obj(pathSeuratObjQuery)
+```
+
+```{r}
+seuratObjRef <- load_obj(path_seuratObjRef)
+```
+
+```{r}
+Idents(seuratObjRef) <- seuratObjRef@meta.data[[celltypeAnnot]]
+```
+
+## Prep label transfer (do this only once)
+### SCTransform normalize reference data 
+
+https://satijalab.org/seurat/v3.0/integration.html
+
+```{r}
+
+seuratObjRef <- SCTransform(object=seuratObjRef,
+                            do.correct.umi = T,
+                            do.scale = F,
+                            do.center = T,
+                            seed.use = randomSeed,
+                            verbose=T)
+
+```
+
+```{r}
+seuratObjRef <- RunPCA(object = seuratObjRef,
+                       npcs = npcs,
+                       verbose = F,
+                       seed.use = randomSeed)
+```
+
+## overwrite existing copy of the reference data seurat object with the SCT normalized version to avoid repeating step
+
+```{r}
+saveMeta(savefnc= saveRDS, object = seuratObjRef, file=path_seuratObjRef, compress="gzip")
+```
+
+### Transfer labels from reference dataset 
+
+```{r}
+anchors <- FindTransferAnchors(reference = seuratObjRef, 
+                               reduction="pcaproject",
+                               query = seuratObjQuery, 
+                               npcs = npcs,
+                               dims = 1:npcs, 
+                               verbose=T)
+```
+
+```{r}
+predictions <- TransferData(anchorset = anchors, 
+                            refdata = seuratObjRef@meta.data[[celltypeAnnot]], 
+                            dims = 1:npcs,
+                            verbose=T)
+
+colnames(predictions) <- paste0(celltypeAnnot, "_", colnames(predictions))
+```
+
+```{r}
+seuratObjQuery <- AddMetaData(seuratObjQuery, 
+                              metadata = predictions)
+```
+
+```{r}
+table(seuratObjQuery@meta.data[[paste0(celltypeAnnot, "_predicted.id")]])
+ #   0    1    2    3    4    5    6    7    8    9
+ # 821 5136 2172 7785  890 1000 2838  180  147   38
+```
+
+```{r}
+seuratObjQuery@meta.data[[paste0(celltypeAnnot, "_prediction.score.max")]] %>% summary
+ #   Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+ # 0.1632  0.5099  0.7189  0.6977  0.8869  1.0000
+```
+
+unassign cells with poor prediction.score.max
+
+```{r}
+seuratObjQuery@meta.data[[paste0(celltypeAnnot,"_predicted.id")]][(seuratObjQuery@meta.data[[paste0(celltypeAnnot,"_prediction.score.max")]] <= minPredictionScore)] <- "unassigned"
+```
+
+### plot 
+
+plot query data grouped by predicted IDs 
+plot a grid with each cluser highlighted
+
+```{r}
+variable.plot = paste0(celltypeAnnot, "_predicted.id")
+#variable.plot = "cluster"
+list_plot <- lapply(names(table(seuratObjQuery@meta.data[[variable.plot]])), function(var.plot) {
+  DimPlot(object = seuratObjQuery, 
+               reduction = "umap", 
+               cells.highlight = colnames(seuratObjQuery)[seuratObjQuery@meta.data[[variable.plot]]==var.plot],
+               group.by = variable.plot, 
+               label = F 
+          #     repel = T
+        )})
+
+p1<- cowplot::plot_grid(plotlist = list_plot,
+                        #ncol= (list_plot %>% length %>% sqrt %>% as.integer),
+                        labels=names(table(seuratObjQuery@meta.data[[variable.plot]])))
+
+saveMeta(savefnc = cowplot::save_plot, 
+         plot=p1,
+          ncol= (list_plot %>% length %>% sqrt %>% as.integer),
+          filename =  here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_umap_", variable.plot, "_minScore_", minPredictionScore ,"_grid.pdf")),
+          base_height = 15, # of a subplot
+          #base_width = 5,
+          base_aspect_ratio = 0.4,
+          limitsize=F)
+```
+
+# plot Aizarani et al marker genes (Fig. 1 d)
+#
+# ```{r}
+# 
+# # Aizarani et al markers
+# # Main text, Fig 1, Fig 2: https://www.nature.com/articles/s41586-019-1373-2
+# #   SOM: https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-019-1373-2/MediaObjects/41586_2019_1373_MOESM1_ESM.pdf
+# 
+# 
+# list_vec_aizaraniMarkers <- list(
+#   #"aizarani-myofibroblasts" = c(""),
+#   "aizarani-EPCAM_pos-cholangiocytes"=c("EPCAM","CYGB", "ACTA2", "KRT18", "KRT7", "KRT19", "SOX9", "CFTR"), # aizarani
+#   "aizarani-hep-central" = c("GLUL"," CYP1A2", "CYP2E1"), # NB:overlaps with midzonal. Aizarani et al main text NB: could there be a confusion between CYP1A2 and CYP2A1, referred to in the main and SOM text, respectively?
+#   "aizarani-hep-midzonal"=c("APOE", " CYP1A2", "CYP2E1"), # NB: overlaps with central. Aizarani et al main text.
+#   "aizarani-hep-periportal" = c("ALB", "PCK1"), # Aizarani et al main text.
+#   "aizarani-hep" =  c("TF", "CYP3A4", "CYP2E1", "APOB", "ASGR1", "PCK1", "HP", "ASS1"), # Aizarani et al main text Fig 1
+#   "aizarani-ECs-periportal" = c("BTNL9","ANPEP"), # Aizarani et al main text. SOM note 2:  Immunostaining  of  ANPEP  indicated  strong  expression  in  the  bile  canaliculi  of  hepatocytes  and  specific  expression   in   LSECs   closer   to   the   periportal   zone   (Fig.   2b)
+#   "aizarani-ECs-midzonal" = c("LYVE1", "FCN3", "CD14"), # Aizarani et al main text. SOM note 2:  we   found   CD14   to   be   co-expressed   by   midzonal   hepatocytes  and  LSECs  (Extended  Data  Fig.  4a).
+#   "aizarani-ECs-central" = c("ICAM1", "FCN3", "ENG", "CD14", "STAB2"),  # SOM note 1:  we   found   CD14   to   be   co-expressed   by   midzonal   hepatocytes  and  LSECs  (Extended  Data  Fig.  4a). STAB2 from Rikard. 
+# 
+#   "aizarani-LSECs" = c("CLEC4G", "CLEC4M"), # Aizarani SOM note 1: In  the  normal  liver,  LSECs  line  the  sinusoids  of  the  liver  lobule  and  are  CLEC4G+PECAM1low. 
+#   "aizarani-LSECS-CD34_pos" = c("CLEC4G", "CLEC4M", "CD34"), # Aizarani SOM note 1: Interestingly,  we  find  that  CD34  also  stains  some  LSECs  in  the  periportal  zone. 
+#   "aizarani-MaVECs" = c("CD34", "PECAM1"), # Aizarani SOM note 1: MaVECs   line   the   hepatic   arteries   and   veins   and   are   CD34+PECAM1high  cells
+#   "aizarani-MaVEC-ACP1_high" = c("CD34", "PECAM1", "AQP1"),
+#   "aizarani-MaVEC-CPE_pos" = c("CD34", "PECAM1", "CPE"), # Aizarani SOM note 1:Within  the  CD34+compartment  we  identified  an  AQP1high    population as well as a CPE+ (clusters 29 and 32) and a CPE- (cluster 10) sub-population (Extended Data Fig.  2c,  d). Antibody  stainings  extracted  from  the  Human  Protein  Atlas  revealed  strong  AQP1 expression in endothelial cells of the portal tract as well as in bile duct cells (Extended Data  Fig.  2f).
+#   "aizarani-MaVECs-and-LSECs" = c("FLT1", "VWF"),# aizarani
+#   "aizarani-ECs-CCL21_pos"=c("CCL21","UNC5B","TFF3"), # Aizarani SOM note 1: In  addition,  we  identified  several  other  novel  sub-types,  including  a  CCL21+ population,   which   expresses   angiogenesis-associated   genes   like   the   netrin   receptor   UNC5B  and  TFF352(cluster  35)  (Extended  Data  Fig.  2c).
+#   #"aizarani-ECs-H19_high" = c("H19"), # This isn't detected in our data
+#   # Aizarani SOM note 1: Another  population  highly  expresses H19, a non-coding RNA involved in early development.
+#   "aizarani-NK-and-Tcells"=c("KLRB1", "CD8A", "CD3E"),# aizarani
+#   "aizarani-B-cells-MS4A1_pos-CD37_pos" = c( "MS4A1","CD37"), 
+#   #"aizarani-NK-CD56_pos" = c("CD56"), # Aizarani main text: Finally, we recovered a population of CD56+ (also known as NCAM1+) natural killer (NK) cells (cluster 5), as well as CD56– (cluster 3) and CD56+ (cluster 1) CD8A+ NKT cells, which expressed different combinations of chemokine ligands, granzymes, and killer cell lectin-like receptor genes (Extended Data Fig. 6). In clusters 12 and 18, a number of heat-shock genes are upregulated. # We don't detect CD56
+#   "aizarani-NKT-CD56pos-CD8A_pos" = c("CD56", "CD8A"),
+#   # Kupffer cells
+#   # Aizarani SOM note 4: Interestingly,  we  observed  that  CD14, LYVE1  and  MRC1  are  co-expressed  by  Kupffer  cell  and  midzonal  LSEC  subsets  (Extended  Data    Fig.    4a). Furthermore,    pathway    enrichment    analysis    indicated    that    the    LILRB5+HMOXhigh Kupffer cell subset shares pathways such as binding and uptake of ligands by scavenger receptors with subsets of hepatocytes and endothelial cells (Extended Data Fig. 4b). Additional   cell   types   co-clustering   with   these   Kupffer   cell   subtypes   comprise   CD163+VCAN+  cells  (cluster  23),  CD163+AREG+  cells  (cluster  25),  and  a  small  CD163+cluster   expressing   cytochrome   P450   genes   (cluster   31).   The   latter   population   could   potentially  be  explained  by  doublets  consisting  of  Kupffer  cells  or  macrophages  and  hepatocytes, or hepatocytes being phagocytosed (Extended Data Fig. 4c).
+#   "aizarani-Kupffercells-LILRB5_pos"=c("CD163", "VSIG4", "MAFB","LILRB5", "CD5L","MARCO","HMOX1"), # Aizarani SOM note 4: Differential gene expression and pathway enrichment analysis indicated  an  immunoregulatory  and  metabolic  gene  signature. [...] Furthermore, LILRB5 belongs to the LILR subfamily B receptors, which bind to MHC class I molecules on antigen presenting cells and inhibits stimulation of an immune response. Moreover, we detected higher CD163 expression in the LILRB5+ subset compared to the CD1C+ subset, which is consistent with the high  expression  of  CD163  in  M2  macrophages. "MAFB" from Figure 1
+#   "aizarani-Kupffercells-CD1C_pos" =c("CD163", "VSIG4","MAFB", "CD1C","FCER1A")) # Aizarani SOM note 4: exhibit  a  signature  with  higher  expression  of  genes  involved  in  MHC  Class  II  antigen  presentation  such  as  HLA-DRA. "MAFB" from Figure 1
+#    
+# ```
+# 
+# 
+# ```{r}
+# # macparland et al markers 
+# # main text: https://www.nature.com/articles/s41467-018-06318-7
+# list_vec_macparlandMarkers <- list(
+#     "macparland-Hepatic_stellate_cells" = c("ACTA2", "COL1A1", "TAGLN", "COL1A2", "COL3A1", "SPARC", "RBP1"), # MacParland main text: Additional genes specific to this cluster include DCN, MYL9 (Fig. 7h–i), TPM2, MEG3, BGN, IGFBP7, IGFBP3, CYR61, OLFML3, IGFBP6, CCL2, COLEC11, CTGF, HGF (Top DE genes).
+#   "macparland-periportal"=c("CRP", "SLPI", "LEPR", "A2M", "CHI3L1", "HAL"),
+#   "macparland-Periportal_LSECs"=c("C7", "MGP", "ID1", "LDB2", "CD9", "AQP1", "SOX18"),
+#   "macparland-Cholangiocytes" = c("KRT7", "KRT19", "CXCL6", "SFRP5", "CLDN10", "BICC1", "AQP1", "ERICH5"),
+#   #"macparland-LSECs-medial-central"=c("RELN"),
+#   "macparland-Hep_6"=c("CYP3A4","ADIRF"), # 
+#   "macparland-Non_inflammatory_Macs" = c("CD68", "CD5L", "MARCO", "VSIG4", "CPVL", "CD163", "CCDC88A", "C5AR1", "LIPA", "LILRB5", "MAF", "CTSB"), # CD68+ macrophage population 2 (Cluster 10; Fig. 2f) was characterized by enriched expression of CD5L, MARCO, VSIG4, CPVL, CD163, CCDC88A, C5AR1, LIPA, LILRB5, MAF, CTSB, MS4A7, VMO1, RAB31, SLC31A2, TTYH3, VCAM1, KLF4, HMOX1, AIF1l, TMIGD3 (top DE genes). 
+#   "macparland-Inflammatory_Macs" = c("CD68", "LYZ","CSTA","CD74", "S100A8", "LYZ", "S100A9", "HLA-DPB1", "S100A12"), # (Top DE genes: S100A8, LYZ, S100A9, HLA-DPB1, S100A12, RP11-1143G9.4, EVI2A, HLA-DPA1, VCAN, S100A6, CXCL8, HLA-DRA, MNDA, TYROBP, HLA-DRB1, FCN1, HLA-DQA1, IL18, C1QC, CD74, HLA-DRB5).
+#   # T cells
+#   # The T cell repertoire within the human liver can be categorized into two broad groups: conventional and unconventional. Conventional T cells consist of CD8+ and CD4+ cells expressing αβ-chain TCRs that recognize antigen in the context of MHC class I and class II molecules respectively. Conventional T cells comprise up to 86% of all CD3+ T cells within the human liver64. Unconventional T cells can express either αβ or γδ TCRs but are not restricted by MHC and do not recognize classical peptide antigens65. In mice, the microbial antigens that enter the liver by the portal vein following digestion have been found to sustain γδ T cell homeostasis and activation66. The relative abundance of subsets of unconventional T cells within the human liver remains to be defined.
+#   # Within this population, cells show enriched expression of CD69 and CD8A (Supplementary Data 1, 2). CD69 is a marker for recently activated T cells, and is enriched in tissue resident memory T cells when compared to circulating memory T cells67,68. However, multiple studies have shown that CD69+ CD45RA− tissue resident memory T cells do not express activation markers such as CD25 (IL2RA) or CD38, indicating that the predominant cell in this cluster likely represents tissue resident memory T cells instead of newly activated T cells67. Furthermore, CD69 antagonizes the function and downregulates S1PR1, which is needed for T cell egress from tissues47,48. Since we observed no enrichment of expression of S1PR1, CD38, or IL2RA, all genes characteristic of newly activated non-memory T cells, this further supports our identification of these cells as tissue resident memory T cells
+#   "macparland-Alpha_Beta_T_cells"=c("CD3D", "CD8","CD4", "CD2", "CD3D", "TRAC", "GZMK", "CCL5", "CCL4L2", "PYHIN1"),
+#   "macparland-Gamma_delta_T_cells_1" =c("CD3", "CD3D", "TBX21", "KLRB1", "FCGR3A", "NKG7", "GNLY", "TRDC", "TRGC1", "PTGDS", "GZBM"),
+#   "macparland-Gamma_delta_T_cells_2" = c("CD3", "TRDC", "STMN1", "GNLY", "NKG2A", "TYMS", "TOP2A", "HMGB2"),
+#   # lympocytes
+#   "macparland-NK_like_cells"=c("CD7", "KLRD1","GZMK","NCR1","NCAM1", "CMC1", "EOMES", "XCL2", "KLRB1", "XLC1", "D7", "CMC1", "XCL2", "KLRB1", "XCL1", "KLRC1", "KLRF1", "IL2RB", "CD160", "CCL3", "KLRD1", "NKG7", "TXK", "ALOX5AP", "TRDC", "CD69", "TMIGD2", "CLIC3", "GZMK", "DUSP2", "MATK", "IFITM1", "CCL4", "CD247"),
+#   # Along with conventional T cells, γδ T cells, and NK-like cells, it is known that NKT cells, MAIT cells and atypical T cells populations are found in the liver73,74. In our initial analysis, we identified clusters that corresponded to T and NK-like cells, but our data does not currently have the resolution to characterize the less-frequent immune cell populations from the TLH analysis and we suggest that these clusters are likely multiple cell populations. MAIT cells in particular are a subset of T cells with an αβ TCR characterized by a semi-invariant TCR alpha (TCRα) chain and CD161 expression. These cells likely fall within Cluster 2, for example CD161 (KLRB1) is expressed on 52% of cells in Cluster 2 (Supplementary Data 1, 2). In the future, we will employ TCR clonotyping to examine the transcriptional signature of CD161+ αβ TCR+ cells expressing the known semi-invariant TCRs characteristic of MAIT cells (TRAV1-2/TRAJ12/20/3). As well, in cluster 8 (NK-like), 23% of the cells express NKp46 (NCR1) and 18% express CD56 (NCAM1)(Supplementary Data 1&2). This suggests that additional cell populations are clustering with CD56+ NKp46+ cells due to similarities in gene expression. To address this issue, we focused on the T and NK cell populations and carried out a sub-analysis comparing clusters 2, 8, 9, and 18 to one another. This analysis yielded nine populations of conventional and unconventional T cells and NK-like cells that comprise cells with inflammatory or immunoregulatory properties (Supplementary Data 2, 6 and Supplementary Fig. 19). These results provide a description of baseline T and NK cell transcriptomes in the human liver. Further characterization of these cell populations will require a more cells and additional single-cell analysis tools, including surface protein labeling (CITE-seq)39 and simultaneous characterization of the T cell receptor clonotype using single-cell V(d)J sequencing [https://www.10xgenomics.com/solutions/vdj/]. These approaches will improve our ability to detect and identify these important cell populations in future analyses.
+#   # B cells
+#   "macparland-Mature_B_cells"=c("IGHD", "CD19", "MS4A1", "CD22", "CD52","LTB", "CD37", "CD79B" , "HLA-DQB1", "TNFRSF13C", "TCL1A", "LINC00926","STAG3", "IGHD", "BANK1", "IRF8", "BIRC3", "P2RX5", "RP11-693J15.5", "RP5-887A10.1", "VPREB3", "CD22"," CD74", "SELL"),
+#   "macparland-Plasma_cells"=c("CD27",  "CD38", "IGLC2", "IGHG1", "IGKC", "IGHG2", "IGHG3", "IGHGP", "IGLC3", "JCHAIN", "IGHA1", "IGHG4", "IGHA2", "IGHM", "IGLV3-1", "IGLC7", "MZB1", "CD79A", "SSR4", "IL16" )
+#   
+# )
+# # TODO
+# 
+# ```
+
+Score the cell clusters using an algorithm
+
+```{r}
+path_macparland_ESM_2 = here("data", "macparland-nature-2018-ESM-2.xlsx")
+  
+df_macparland_topDEgenes <- openxlsx::read.xlsx(xlsxFile = path_macparland_ESM_2,
+                            sheet="All 20 Clusters ranked by p-val",
+                            #startRow=1,
+                            colNames=T,
+                            rowNames=F,
+                            rows=c(1,3:22),
+                            cols=seq.int(from=3,by=3,length.out=20))
+
+df_macparland_topDEgenes[0:5,0:5]
+```
+
+```{r}
+dim(df_macparland_topDEgenes)
+```
+
+```{r}
+seuratObjMacparland <- readRDS(here("data","macparland_seurat_obj3.RDS.gz"))
+```
+
+```{r}
+colnames(df_macparland_topDEgenes) <- sapply(1:20, function(clust){
+  clustLabel <- seuratObjMacparland@meta.data$Cluster_annot[which(seuratObjMacparland@meta.data$Cluster==clust)[1]]
+  clustLabel <- paste0("macparland-", clustLabel)
+})
+```
+
+```{r}
+list_vec_markers_up_macparland <- as.list(df_macparland_topDEgenes)
+```
+
+
+Get aizarani fine clusters top DE genes
+
+```{r}
+
+path_aizarani_ESM_2 = here("data", "aizarani-nature-2019-ESM-2.xls")
+
+list_tibbl_aizarani_DEgenes <- lapply(paste0("Cluster ", 1:39), function(sheet) readxl::read_xls(path= path_aizarani_ESM_2,
+                            sheet=sheet,
+                            col_names=T
+                          )
+                          )
+
+```
+
+
+```{r}
+names_aizarani_clusters <- c("aizarani-1-NKT-CD56_neg-CD8A_pos", # Extended Data Fig. 6 says CD56 negative; main text says positive.
+                                   "aizarani-2-Kupffercells-CD1C_pos",
+                                   "aizarani-3-NKT-CD56_neg",
+                                   "aizarani-4-Cholangiocytes-MMP8_pos",
+                                   "aizarani-5-NK-CD56_pos-CD8A_neg",
+                                   "aizarani-6-Kupffercells-LILRB5_pos",
+                                   "aizarani-7-Cholangiocytes-MMP8_pos",
+                                   "aizarani-8-Cholangiocytes-CXCL8_pos",
+                                   "aizarani-9-ECs-CD34_pos-CPE_neg",
+                                   "aizarani-10-ECs",
+                                   "aizarani-11-Hepatocytes",
+                                   "aizarani-12",
+                                   "aizarani-13",
+                                   "aizarani-14",
+                                   "aizarani-15",
+                                   "aizarani-16",
+                                   "aizarani-17",
+                                   "aizarani-18",
+                                   "aizarani-19",
+                                   "aizarani-20",
+                                   "aizarani-21",
+                                   "aizarani-22",
+                                   "aizarani-23-Kupffer-like-CD163_pos-VCAN_pos",
+                                   "aizarani-24",
+                                "aizarani-25-Kuffper-like-CD163_pos-AREG_pos",
+                                   "aizarani-26",
+                                   "aizarani-27",
+                                   "aizarani-28",
+                                   "aizarani-29-ECs-CD34_pos-AQP1_high",
+                                   "aizarani-30",
+                                   "aizarani-31-Kuffper-like-CD163_pos-VCAN_pos",
+                                   "aizarani-32-ECs-CD34_pos-CPE_pos",
+                                   "aizarani-33",
+                                   "aizarani-34",
+                                   "aizarani-35-ECs-CCL21_pos",
+                                   "aizarani-36",
+                                   "aizarani-37",
+                                   "aizarani-38",
+                                   "aizarani-39")
+```
+
+## correlate aizarani with perslab clusters using DE genes
+
+```{r}
+list_vec_aizaraniDEgenePadj <- lapply(list_tibbl_aizarani_DEgenes, function(tibbl){
+  vec_out <- tibbl$padj
+  names(vec_out) <- tibbl$GeneSymbol
+  vec_out
+})
+
+```
+
+```{r}
+list_vec_aizaraniDEgeneMinLog10Padj <- lapply(list_vec_aizaraniDEgenePadj, function(vec_tmp) {
+  -log10(vec_tmp)
+})
+```
+
+```{r}
+df_perslabClustermarkers <- openxlsx::read.xlsx(xlsxFile = here("output", "liver_perslab_align_seurat_7_SCTransformIntegrated_clustermarkers.xlsx"),
+                                                colNames=T,
+                                                rowNames=F)
+```
+
+```{r}
+head(df_perslabClustermarkers)
+```
+
+```{r}
+list_vec_perslabDEgenePadj <- lapply(unique(df_perslabClustermarkers$cluster), function(clust.id) {
+  vec_logical <- df_perslabClustermarkers$cluster==clust.id
+  vec_out <- df_perslabClustermarkers$p_val_adj[vec_logical]
+  names(vec_out) <- df_perslabClustermarkers$gene[vec_logical]
+  vec_out
+})
+```
+
+```{r}
+list_vec_perslabDEgeneMinLog10Padj <- lapply(list_vec_perslabDEgenePadj, function(vec_tmp) {
+  -log10(vec_tmp)
+})
+```
+
+```{r}
+mat_cor_DEgenes <- sapply(list_vec_perslabDEgeneMinLog10Padj, function(vec_1) {
+  sapply(list_vec_aizaraniDEgeneMinLog10Padj, function(vec_2) {
+    vec_sharedgenes <- intersect(names(vec_1), names(vec_2))
+    if (length(vec_sharedgenes)) cor(x=vec_1[vec_sharedgenes], y=vec_2[vec_sharedgenes], method="spearman") else 0
+  }, simplify=T)
+}, simplify=T)
+
+rownames(mat_cor_DEgenes) <- names_aizarani_clusters
+colnames(mat_cor_DEgenes) <- unique(df_perslabClustermarkers$cluster)
+
+```
+
+```{r}
+head(mat_cor_DEgenes)
+```
+
+```{r}
+vec_idx_maxCols <- apply(mat_cor_DEgenes, MARGIN = 2, FUN = function(x) {
+  x[is.na(x)] <- 0
+  which.max(x)
+  })
+
+vec_bestMatchRho <- apply(mat_cor_DEgenes, MARGIN = 2, FUN = function(x) max(x, na.rm = T))
+
+vec_bestMatchLabel <- rownames(mat_cor_DEgenes)[vec_idx_maxCols]
+
+df_bestMatch <- data.frame("perslab" = names(vec_idx_maxCols),
+                           "label"=vec_bestMatchLabel,
+                           "correlation"=vec_bestMatchRho)
+```
+
+```{r}
+df_cor_DEgenes <- data.frame(mat_cor_DEgenes)
+colnames(df_cor_DEgenes) <- paste0("perslab_cluster_", colnames(mat_cor_DEgenes))
+write.csv(df_cor_DEgenes,file = here("output", paste0(prefixData, "_" ,prefixRun, "_", prefixOut, "_mat_cor_DEgenes_aizarani_perslab.csv")), quote=F, row.names=T)#, col.names = T)
+```
+
+
+<!-- # add cluster column and combine -->
+
+<!-- ```{r} -->
+<!-- mat_aizarani_DEgenes <- sapply(list_tibbl_aizarani_DEgenes, function(tibbl) { -->
+<!--   tibbl %>%  -->
+<!--     arrange(., padj) %>%  -->
+<!--               select(., GeneSymbol) -> df_geneSymbol -->
+
+<!--   df_geneSymbol[[1]][1:20] -> vec_topDEgenes -->
+<!-- }, simplify = T) -->
+
+<!-- df_aizarani_DEgenes <- data.frame(mat_aizarani_DEgenes) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- colnames(df_aizarani_DEgenes) <- names_aizarani_clusters -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- list_vec_markers_up_aizarani <- as.list(df_aizarani_DEgenes) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- list_vec_markers_up = append(list_vec_markers_up_macparland, list_vec_markers_up_aizarani) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # TODO: only include positive (not up) -->
+
+<!-- list_vec_markers_pos_macparland <- list( -->
+<!--   # macparland -->
+<!--   "macparland-Hepatic_stellate_cells" = c("ACTA2", "COL1A1", "TAGLN", "COL1A2", "COL3A1", "SPARC", "RBP1"),# MacParland main text: Additional genes specific to this cluster include DCN, MYL9 (Fig. 7h–i), TPM2, MEG3, BGN, IGFBP7, IGFBP3, CYR61, OLFML3, IGFBP6, CCL2, COLEC11, CTGF, HGF (Top DE genes). -->
+<!--   #"macparland-periportal"=c(), -->
+<!--   "macparland-Periportal_LSECs"=c(), -->
+<!--   "macparland-Cholangiocytes" = c(), -->
+<!--   #"macparland-LSECs-medial-central"=c("RELN"), -->
+<!--   "macparland-Hep_6"=c(), #  -->
+<!--   "macparland-Non_inflammatory_Macs" = c(), # CD68+ macrophage population 2 (Cluster 10; Fig. 2f) was characterized by enriched expression of CD5L, MARCO, VSIG4, CPVL, CD163, CCDC88A, C5AR1, LIPA, LILRB5, MAF, CTSB, MS4A7, VMO1, RAB31, SLC31A2, TTYH3, VCAM1, KLF4, HMOX1, AIF1l, TMIGD3 (top DE genes).  -->
+<!--   "macparland-Inflammatory_Macs" = c(), # (Top DE genes: S100A8, LYZ, S100A9, HLA-DPB1, S100A12, RP11-1143G9.4, EVI2A, HLA-DPA1, VCAN, S100A6, CXCL8, HLA-DRA, MNDA, TYROBP, HLA-DRB1, FCN1, HLA-DQA1, IL18, C1QC, CD74, HLA-DRB5). -->
+<!--   # T cells -->
+<!--   # The T cell repertoire within the human liver can be categorized into two broad groups: conventional and unconventional. Conventional T cells consist of CD8+ and CD4+ cells expressing αβ-chain TCRs that recognize antigen in the context of MHC class I and class II molecules respectively. Conventional T cells comprise up to 86% of all CD3+ T cells within the human liver64. Unconventional T cells can express either αβ or γδ TCRs but are not restricted by MHC and do not recognize classical peptide antigens65. In mice, the microbial antigens that enter the liver by the portal vein following digestion have been found to sustain γδ T cell homeostasis and activation66. The relative abundance of subsets of unconventional T cells within the human liver remains to be defined. -->
+<!--   # Within this population, cells show enriched expression of CD69 and CD8A (Supplementary Data 1, 2). CD69 is a marker for recently activated T cells, and is enriched in tissue resident memory T cells when compared to circulating memory T cells67,68. However, multiple studies have shown that CD69+ CD45RA− tissue resident memory T cells do not express activation markers such as CD25 (IL2RA) or CD38, indicating that the predominant cell in this cluster likely represents tissue resident memory T cells instead of newly activated T cells67. Furthermore, CD69 antagonizes the function and downregulates S1PR1, which is needed for T cell egress from tissues47,48. Since we observed no enrichment of expression of S1PR1, CD38, or IL2RA, all genes characteristic of newly activated non-memory T cells, this further supports our identification of these cells as tissue resident memory T cells -->
+<!--   "macparland-Alpha_Beta_T_cells"= -->
+<!--     c("CD3D","CD8","CD4","CD69","CD8A"), -->
+<!--   "macparland-Gamma_delta_T_cells_1" = -->
+<!--     c("CD3D","TBX21", "KLRB1","FCGR3A", "NKG7", "GNLY","TRDC", "TRGC1"), -->
+<!--   "macparland-Gamma_delta_T_cells_2" =  -->
+<!--     c("CD3", "TRDC", "GNLY", "NKG2A", "TYMS", "TOP2A"), -->
+<!--   # lympocytes -->
+<!--   "macparland-NK_like_cells"=c("CD7","KLRD1","GZMK", "NCR1","NCAM1", "EOMES"), -->
+<!--   # Along with conventional T cells, γδ T cells, and NK-like cells, it is known that NKT cells, MAIT cells and atypical T cells populations are found in the liver73,74. In our initial analysis, we identified clusters that corresponded to T and NK-like cells, but our data does not currently have the resolution to characterize the less-frequent immune cell populations from the TLH analysis and we suggest that these clusters are likely multiple cell populations. MAIT cells in particular are a subset of T cells with an αβ TCR characterized by a semi-invariant TCR alpha (TCRα) chain and CD161 expression. These cells likely fall within Cluster 2, for example CD161 (KLRB1) is expressed on 52% of cells in Cluster 2 (Supplementary Data 1, 2). In the future, we will employ TCR clonotyping to examine the transcriptional signature of CD161+ αβ TCR+ cells expressing the known semi-invariant TCRs characteristic of MAIT cells (TRAV1-2/TRAJ12/20/3). As well, in cluster 8 (NK-like), 23% of the cells express NKp46 (NCR1) and 18% express CD56 (NCAM1)(Supplementary Data 1&2). This suggests that additional cell populations are clustering with CD56+ NKp46+ cells due to similarities in gene expression. To address this issue, we focused on the T and NK cell populations and carried out a sub-analysis comparing clusters 2, 8, 9, and 18 to one another. This analysis yielded nine populations of conventional and unconventional T cells and NK-like cells that comprise cells with inflammatory or immunoregulatory properties (Supplementary Data 2, 6 and Supplementary Fig. 19). These results provide a description of baseline T and NK cell transcriptomes in the human liver. Further characterization of these cell populations will require a more cells and additional single-cell analysis tools, including surface protein labeling (CITE-seq)39 and simultaneous characterization of the T cell receptor clonotype using single-cell V(d)J sequencing [https://www.10xgenomics.com/solutions/vdj/]. These approaches will improve our ability to detect and identify these important cell populations in future analyses. -->
+<!--   # B cells -->
+<!--   "macparland-Mature_B_cells"=c(), -->
+<!--   "macparland-Plasma_cells"=c(),  -->
+
+<!-- ``` -->
+
+<!-- ```{r}   -->
+
+<!-- # TODO: only include positive (not up) -->
+<!-- # TODO: align with clusters -->
+
+<!-- # Aizarani et al markers -->
+<!-- # Main text, Fig 1, Fig 2: https://www.nature.com/articles/s41586-019-1373-2 -->
+<!-- #   SOM: https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-019-1373-2/MediaObjects/41586_2019_1373_MOESM1_ESM.pdf -->
+
+<!-- list_vec_markers_pos_aizarani <- list( -->
+<!--     "aizarani-1-NKT-CD56_pos" = c("CD56", "CD8A","CCL5", "NKG7","CCL4","IL2RB"), -->
+<!--   #"aizarani-myofibroblasts" = c(""), -->
+<!--   "aizarani-EPCAM_pos-cholangiocytes"=c("EPCAM","CYGB", "ACTA2", "KRT18", "KRT7", "KRT19", "SOX9", "CFTR"), # aizarani -->
+<!--   "aizarani-hep-central" = c("GLUL"," CYP1A2", "CYP2E1"), # NB:overlaps with midzonal. Aizarani et al main text NB: could there be a confusion between CYP1A2 and CYP2A1, referred to in the main and SOM text, respectively? -->
+<!--   "aizarani-hep-midzonal"=c("APOE", " CYP1A2", "CYP2E1"), # NB: overlaps with central. Aizarani et al main text. -->
+<!--   "aizarani-hep-periportal" = c("ALB", "PCK1"), # Aizarani et al main text. -->
+<!--   "aizarani-hep" =  c("TF", "CYP3A4", "CYP2E1", "APOB", "ASGR1", "PCK1", "HP", "ASS1"), # Aizarani et al main text Fig 1 -->
+<!--   "aizarani-ECs-periportal" = c("BTNL9","ANPEP"), # Aizarani et al main text. SOM note 2:  Immunostaining  of  ANPEP  indicated  strong  expression  in  the  bile  canaliculi  of  hepatocytes  and  specific  expression   in   LSECs   closer   to   the   periportal   zone   (Fig.   2b) -->
+<!--   "aizarani-ECs-midzonal" = c("LYVE1", "FCN3", "CD14"), # Aizarani et al main text. SOM note 2:  we   found   CD14   to   be   co-expressed   by   midzonal   hepatocytes  and  LSECs  (Extended  Data  Fig.  4a). -->
+<!--   "aizarani-ECs-central" = c("ICAM1", "FCN3", "ENG", "CD14", "STAB2"),  # SOM note 1:  we   found   CD14   to   be   co-expressed   by   midzonal   hepatocytes  and  LSECs  (Extended  Data  Fig.  4a). STAB2 from Rikard.  -->
+
+<!--   "aizarani-LSECs" = c("CLEC4G", "CLEC4M"), # Aizarani SOM note 1: In  the  normal  liver,  LSECs  line  the  sinusoids  of  the  liver  lobule  and  are  CLEC4G+PECAM1low.  -->
+<!--   "aizarani-LSECS-CD34_pos" = c("CLEC4G", "CLEC4M", "CD34"), # Aizarani SOM note 1: Interestingly,  we  find  that  CD34  also  stains  some  LSECs  in  the  periportal  zone.  -->
+<!--   "aizarani-MaVECs" = c("CD34", "PECAM1"), # Aizarani SOM note 1: MaVECs   line   the   hepatic   arteries   and   veins   and   are   CD34+PECAM1high  cells -->
+<!--   "aizarani-MaVEC-ACP1_high" = c("CD34", "PECAM1", "AQP1"), -->
+<!--   "aizarani-MaVEC-CPE_pos" = c("CD34", "PECAM1", "CPE"), # Aizarani SOM note 1:Within  the  CD34+compartment  we  identified  an  AQP1high    population as well as a CPE+ (clusters 29 and 32) and a CPE- (cluster 10) sub-population (Extended Data Fig.  2c,  d). Antibody  stainings  extracted  from  the  Human  Protein  Atlas  revealed  strong  AQP1 expression in endothelial cells of the portal tract as well as in bile duct cells (Extended Data  Fig.  2f). -->
+<!--   "aizarani-MaVECs-and-LSECs" = c("FLT1", "VWF"),# aizarani -->
+<!--   "aizarani-ECs-CCL21_pos"=c("CCL21","UNC5B","TFF3"), # Aizarani SOM note 1: In  addition,  we  identified  several  other  novel  sub-types,  including  a  CCL21+ population,   which   expresses   angiogenesis-associated   genes   like   the   netrin   receptor   UNC5B  and  TFF352(cluster  35)  (Extended  Data  Fig.  2c). -->
+<!--   #"aizarani-ECs-H19_high" = c("H19"), # This isn't detected in our data -->
+<!--   # Aizarani SOM note 1: Another  population  highly  expresses H19, a non-coding RNA involved in early development. -->
+<!--   "aizarani-NK-and-Tcells"=c("KLRB1", "CD8A", "CD3E"),# aizarani -->
+<!--   "aizarani-B-cells-MS4A1_pos-CD37_pos" = c( "MS4A1","CD37"),  -->
+<!--   #"aizarani-NK-CD56_pos" = c("CD56"), # Aizarani main text: Finally, we recovered a population of CD56+ (also known as NCAM1+) natural killer (NK) cells (cluster 5), as well as CD56– (cluster 3) and CD56+ (cluster 1) CD8A+ NKT cells, which expressed different combinations of chemokine ligands, granzymes, and killer cell lectin-like receptor genes (Extended Data Fig. 6). In clusters 12 and 18, a number of heat-shock genes are upregulated. # We don't detect CD56 -->
+<!--   "aizarani-NKT-CD56pos-CD8A_pos" = c("CD56", "CD8A"), -->
+<!--   # Kupffer cells -->
+<!--   # Aizarani SOM note 4: Interestingly,  we  observed  that  CD14, LYVE1  and  MRC1  are  co-expressed  by  Kupffer  cell  and  midzonal  LSEC  subsets  (Extended  Data    Fig.    4a). Furthermore,    pathway    enrichment    analysis    indicated    that    the    LILRB5+HMOXhigh Kupffer cell subset shares pathways such as binding and uptake of ligands by scavenger receptors with subsets of hepatocytes and endothelial cells (Extended Data Fig. 4b). Additional   cell   types   co-clustering   with   these   Kupffer   cell   subtypes   comprise   CD163+VCAN+  cells  (cluster  23),  CD163+AREG+  cells  (cluster  25),  and  a  small  CD163+cluster   expressing   cytochrome   P450   genes   (cluster   31).   The   latter   population   could   potentially  be  explained  by  doublets  consisting  of  Kupffer  cells  or  macrophages  and  hepatocytes, or hepatocytes being phagocytosed (Extended Data Fig. 4c). -->
+<!--   "aizarani-Kupffercells-LILRB5_pos"=c("CD163", "VSIG4", "MAFB","LILRB5", "CD5L","MARCO","HMOX1"), # Aizarani SOM note 4: Differential gene expression and pathway enrichment analysis indicated  an  immunoregulatory  and  metabolic  gene  signature. [...] Furthermore, LILRB5 belongs to the LILR subfamily B receptors, which bind to MHC class I molecules on antigen presenting cells and inhibits stimulation of an immune response. Moreover, we detected higher CD163 expression in the LILRB5+ subset compared to the CD1C+ subset, which is consistent with the high  expression  of  CD163  in  M2  macrophages. "MAFB" from Figure 1 -->
+<!--   "aizarani-Kupffercells-CD1C_pos" =c("CD163", "VSIG4","MAFB", "CD1C","FCER1A")) # Aizarani SOM note 4: exhibit  a  signature  with  higher  expression  of  genes  involved  in  MHC  Class  II  antigen  presentation  such  as  HLA-DRA. "MAFB" from Figure 1 -->
+<!-- ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- list_vec_markers_pos = append(list_vec_markers_pos_macparland, list_vec_markers_pos_aizarani) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- list_vec_markers_down <- list( -->
+<!--  # macparland -->
+<!--   "macparland-Hepatic_stellate_cells" = c(), -->
+<!--   "macparland-periportal"=c(), -->
+<!--   "macparland-Periportal_LSECs"=c(), -->
+<!--   "macparland-Cholangiocytes" = c(), -->
+<!--   "macparland-Hep_6"=c(), #  -->
+<!--   "macparland-Non_inflammatory_Macs" = c(), -->
+<!--   "macparland-Inflammatory_Macs" = c(),  -->
+<!--   "macparland-Alpha_Beta_T_cells"=c(), -->
+<!--   "macparland-Gamma_delta_T_cells_1" =c(), -->
+<!--   "macparland-Gamma_delta_T_cells_2" = c("CD4", "CD8"), -->
+<!--   "macparland-NK_like_cells"=c("FCGR3A","ITGA1"), -->
+<!--   "macparland-Mature_B_cells"=c(), -->
+<!--   "macparland-Plasma_cells"=c(),  -->
+
+<!-- # Aizarani et al markers -->
+<!-- # Main text, Fig 1, Fig 2: https://www.nature.com/articles/s41586-019-1373-2 -->
+<!-- #   SOM: https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-019-1373-2/MediaObjects/41586_2019_1373_MOESM1_ESM.pdf -->
+
+<!--   "aizarani-myofibroblasts" = c(""), -->
+<!--   "aizarani-EPCAM_pos-cholangiocytes"=c(),  -->
+<!--   "aizarani-hep-central" = c(),  -->
+<!--   "aizarani-hep-midzonal"=c(),  -->
+<!--   "aizarani-hep-periportal" = c(),  -->
+<!--   "aizarani-hep" =  c(),  -->
+<!--   "aizarani-ECs-periportal" = c(),  -->
+<!--   "aizarani-ECs-midzonal" = c(),  -->
+<!--   "aizarani-ECs-central" = c(),    -->
+<!--   "aizarani-LSECs" = c(),  -->
+<!--   "aizarani-LSECS-CD34_pos" = c(), -->
+<!--   "aizarani-MaVECs" = c(),  -->
+<!--   "aizarani-MaVEC-ACP1_high" = c(), -->
+<!--   "aizarani-MaVEC-CPE_pos" = c(),  -->
+<!--   "aizarani-MaVECs-and-LSECs" = c(),# aizarani -->
+<!--   "aizarani-ECs-CCL21_pos"=c(),  -->
+<!--   "aizarani-NK-and-Tcells"=c(),# aizarani -->
+<!--   "aizarani-B-cells-MS4A1_pos-CD37_pos" = c(),  -->
+<!--   "aizarani-NKT-CD56pos-CD8A_pos" = c(), -->
+<!--   "aizarani-Kupffercells-LILRB5_pos"=c(),  -->
+<!--   "aizarani-Kupffercells-CD1C_pos" =c()  -->
+
+<!-- ) -->
+<!-- ``` -->
+
+```{r}
+list_vec_markers_neg <- list(
+ # macparland
+  "macparland-Hepatic_stellate_cells" = c(""),
+  "macparland-periportal"=c(""),
+  "macparland-Periportal_LSECs"=c(""),
+  "macparland-Cholangiocytes" = c(""),
+  "macparland-Hep_6"=c(""), #
+  "macparland-Non_inflammatory_Macs" = c(""),
+  "macparland-Inflammatory_Macs" = c("MARCO"),  # We found that MARCO-positive macrophages secreted less TNF-α in response to LPS/ IFN-γ stimulation than MARCO-negative CD68+ macrophages, suggesting that CD68+MARCO- cells are more pro-inflammatory (Fig. 8d, Supplementary Fig. 15).
+  "macparland-Alpha_Beta_T_cells"=
+    c("CD45RA","CD25","CD38", "S1PR1", "IL2RA"),
+  # Since we observed no enrichment of expression of S1PR1, CD38, or IL2RA, all genes characteristic of newly activated non-memory T cells, this further supports our identification of these cells as tissue resident memory T cells.
+  "macparland-Gamma_delta_T_cells_1" =c(""),
+  "macparland-Gamma_delta_T_cells_2" = c(""),
+  "macparland-NK_like_cells"=c(""),
+  "macparland-Mature_B_cells"=c(""),
+  "macparland-Plasma_cells"=c(""),
+
+# Aizarani et al markers
+# Main text, Fig 1, Fig 2: https://www.nature.com/articles/s41586-019-1373-2
+#   SOM: https://static-content.springer.com/esm/art%3A10.1038%2Fs41586-019-1373-2/MediaObjects/41586_2019_1373_MOESM1_ESM.pdf
+  "aizarani-1-NKT-CD56_neg-CD8A_pos"= c("CD56"), # Extended Data Fig. 6 says CD56 negative; main text says positive.
+  "aizarani-2-Kupffercells-CD1C_pos"=c(""),
+  "aizarani-3-NKT-CD56_neg"=c(""), # Cluster 3 consists of both CD56 + and CD56 – CD8A + NKT cells.
+  "aizarani-4-Cholangiocytes-MMP8_pos"=c(""),
+  "aizarani-5-NK-CD56_pos-CD8A_neg"=c("CD8A"),
+  "aizarani-6-Kupffercells-LILRB5_pos"=c(""),
+  "aizarani-7-Cholangiocytes-MMP8_pos"=c(""),
+  "aizarani-8-Cholangiocytes-CXCL8_pos"=c(""),
+  "aizarani-9-ECs-CD34_pos-CPE_neg"=c("CPE"),
+  "aizarani-10-ECs"=c(""),
+   "aizarani-11-Hepatocytes"=c(""),
+   "aizarani-12"=c(""),
+   "aizarani-13"=c(""),
+   "aizarani-14"=c(""),
+   "aizarani-15"=c(""),
+   "aizarani-16"=c(""),
+   "aizarani-17"=c(""),
+   "aizarani-18"=c(""),
+   "aizarani-19"=c(""),
+   "aizarani-20"=c(""),
+   "aizarani-21"=c(""),
+   "aizarani-22"=c(""),
+   "aizarani-23-Kupffer-like-CD163_pos-VCAN_pos"=c(""),
+   "aizarani-24"=c(""),
+  "aizarani-25-Kuffper-like-CD163_pos-AREG_pos"=c(""),
+   "aizarani-26"=c(""),
+   "aizarani-27"=c(""),
+   "aizarani-28"=c(""),
+   "aizarani-29-ECs-CD34_pos-AQP1_high"=c(""),
+   "aizarani-30"=c(""),
+   "aizarani-31-Kuffper-like-CD163_pos-VCAN_pos"=c(""),
+   "aizarani-32-ECs-CD34_pos-CPE_pos"=c(""),
+   "aizarani-33"=c(""),
+   "aizarani-34"=c(""),
+   "aizarani-35-ECs-CCL21_pos"=c(""),
+   "aizarani-36"=c(""),
+   "aizarani-37"=c(""),
+   "aizarani-38"=c(""),
+   "aizarani-39"=c("")
+
+)
+```
+
+
+<!-- ```{r} -->
+<!-- # get a rough confirmation -->
+<!-- # can follow up with more thorough testing distinguishing btw up and positive and -->
+<!-- # including downregulated and neg markers later -->
+
+
+<!-- list_markergeneScore <- fnc_markergeneScore(object=seuratObjQuery, -->
+<!--                                         assay="RNA", -->
+<!--                                         group.by = NULL,  -->
+<!--                                         list_vec_markers_up = list_vec_markers_up, -->
+<!--                                         list_vec_markers_down = NULL, -->
+<!--                                         list_vec_markers_pos = NULL, -->
+<!--                                         list_vec_markers_neg = list_vec_markers_neg, -->
+<!--                                         up_min_quant = .9,  -->
+<!--                                         down_max_quant =.1, -->
+<!--                                         pos_min_percent = 30, -->
+<!--                                         neg_max_percent = 5) -->
+<!-- ``` -->
+
+
+<!-- ## Plots -->
+
+<!-- Make dot plot of markers  -->
+
+<!-- all together # TODO: update vectors used -->
+
+<!-- ```{r} -->
+<!-- p <- DotPlot_timshel( -->
+<!--               object=seuratObjQuery, -->
+<!--               assay="RNA", -->
+<!--               do.scale=F, -->
+<!--               genes.plot=unique(c(unlist(list_vec_aizaraniMarkers), unlist(list_vec_macparlandMarkers))), -->
+<!--               cols.use = c("blue", "red"), -->
+<!--               col.min = 0, -->
+<!--               col.max = 10, -->
+<!--               dot.min = 0, -->
+<!--               dot.scale = 6, -->
+<!--               #group.by=NULL, -->
+<!--               #group.order=NULL, -->
+<!--               plot.legend = TRUE, -->
+<!--               do.return = TRUE, -->
+<!--               x.lab.rot = T, -->
+<!--               coord_flip = F, -->
+<!--               df.marker.panel.to.plot=NULL) -->
+<!-- saveMeta(savefnc = ggsave, plot = p, file=here("plots",paste0(prefixData, "_", prefixRun, "_", prefixOut, "_markergenesDotPlot.pdf"))) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- for (markersName in names(list_vec_aizaraniMarkers)) { -->
+
+<!--   tryCatch({p1= FeaturePlot(object = seuratObjQuery,  -->
+<!--                  reduction = "umap", -->
+<!--                 features = list_vec_aizaraniMarkers[[markersName]], -->
+<!--                  label = T) -->
+
+<!--   saveMeta(savefnc = ggsave, -->
+<!--            plot=p1, -->
+<!--            file = here("plots",paste0(prefixData, "_", prefixRun, "_", prefixOut, "_",markersName,".pdf")), width=30, height=30) -->
+<!--   }, error= function(err) {paste0(markersName, " produced the error: ", err)}) -->
+
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- for (markersName in names(list_vec_macparlandMarkers)) { -->
+<!--   p1= FeaturePlot(object = seuratObjQuery,  -->
+<!--                  reduction = "umap", -->
+<!--                 features = list_vec_macparlandMarkers[[markersName]], -->
+<!--                  label = T) -->
+
+<!--   saveMeta(savefnc = ggsave, -->
+<!--            plot=p1, -->
+<!--            file = here("plots",paste0(prefixData, "_", prefixRun, "_", prefixOut, "_",markersName,".pdf")), width=30, height=30) -->
+<!-- } -->
+<!-- ``` -->
+
+Check cluster 5 for EPCAM_plus markers 
+(Aizarani et al ESM Fig. 8 d)
+```{r}
+vec_EPCAM_plus_DEgenes <- c("PROM1", "DEFB1", "TM4SF4", "AQP1", "SFRP5", "ELF3", "CLDN3", "CLDN4", "CLDN10")
+
+vec_EPCAM_plus_DEgenes <- vec_EPCAM_plus_DEgenes[vec_EPCAM_plus_DEgenes%in%rownames(seuratObjQuery)]
+
+p <- FeaturePlot(object=seuratObjQuery, 
+            features = vec_EPCAM_plus_DEgenes, 
+            label = T, 
+            combine = T)
+saveMeta(savefnc=ggsave, plot=p, filename=here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_EPCAM_plus_markers.pdf")), height=15, width=15)
+```
+
+We see that the markers tag cluster 10 but not 5. 
+
+## Annotate 
+
+annotate query clusters (i.e. Perslab)
+
+```{r}
+
+vec_dict.perslab.clust <- c(
+  "0"="0-T-cells-alpha-beta",
+  "1"="1-NK-like-cells",
+  "2"="2-Endothelial-cells",
+  "3"="3-T-cells-gamma-delta",
+  "4"="4-T-cells-alpha-beta",
+  "5"="5-Erythrocytes",
+  "6"="6-Macrophages",
+  "7"="7-Macrophages",
+  "8"="8-Endothelial-cells",
+  "9"="9-Endothelial-cells",
+  "10"="10-Cholangiocytes",
+  "11"="11-Hepatocytes",
+  "12"="12-Macrophages",
+  "13"="13-Endothelial-cells",
+  "14"="14-Hepatic-stellate-cells",
+  "15"="15-Macrophages",
+  "16"="16-B-cells-mature",
+  "17"="17-Plasma-cells",
+  "18"="18-Dendritic-cells",
+  "19"="19-Hepatic-stem-cells") 
+
+```
+
+```{r}
+seuratObjQuery$cluster_perslab <- vec_dict.perslab.clust[match(as.character(seuratObjQuery$seurat_clusters), names(vec_dict.perslab.clust))]
+```
+
+```{r}
+table(seuratObjQuery$cluster_perslab)
+```
+
+add a coarse clustering for gene network analysis
+
+```{r}
+
+vec_dict.perslab.clust.coarse <- c(
+  "0"="T-cells-alpha-beta",
+  "1"="NK-like-cells",
+  "2"="Endothelial-cells",
+  "3"="T-cells-gamma-delta",
+  "4"="T-cells-alpha-beta",
+  "5"="Erythrocytes",
+  "6"="Macrophages",
+  "7"="Macrophages",
+  "8"="Endothelial-cells",
+  "9"="Endothelial-cells",
+  "10"="Cholangiocytes",
+  "11"="Hepatocytes",
+  "12"="Macrophages",
+  "13"="Endothelial-cells",
+  "14"="Hepatic-stellate-cells",
+  "15"="Macrophages",
+  "16"="B-cells-mature",
+  "17"="Plasma-cells",
+  "18"="Dendritic-cells",
+  "19"="Hepatic-stem-cells") 
+
+```
+
+```{r}
+seuratObjQuery$cluster_perslab_coarse <- vec_dict.perslab.clust.coarse[match(as.character(seuratObjQuery$seurat_clusters), names(vec_dict.perslab.clust.coarse))]
+```
+
+```{r}
+table(seuratObjQuery$cluster_perslab_coarse)
+```
+
+## Plot UMAP with new cluster labels
+
+```{r}
+p <- DimPlot(seuratObjQuery, reduction = "umap", group.by = "cluster_perslab", label = T, no.legend=T)
+
+saveMeta(savefnc=ggsave, plot=p, filename=here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_cluster_perslab.pdf")), height=15, width=15)
+```
+
+
+```{r}
+p <- DimPlot(seuratObjQuery, reduction = "umap", group.by = "cluster_perslab_coarse", label = T, no.legend=T)
+
+saveMeta(savefnc=ggsave, plot=p, filename=here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_cluster_perslab_coarse.pdf")), height=15, width=15)
+```
+
+<!-- plot cell phenotypes in reference data -->
+
+<!-- ```{r} -->
+<!-- variable.plot = "sample_annot" -->
+<!-- list_plot <- lapply(names(table(seuratObjRef@meta.data[[variable.plot]])), function(var.plot) { -->
+<!-- DimPlot(object = seuratObjRef,  -->
+<!--              reduction = "tsne",  -->
+<!--              cells.highlight = colnames(seuratObjRef)[seuratObjRef@meta.data[[variable.plot]]==var.plot], -->
+<!--              group.by = variable.plot,  -->
+<!--              label = F  -->
+<!--         #     repel = T -->
+<!--         )}) -->
+
+<!-- p1<- cowplot::plot_grid(plotlist = list_plot, -->
+<!--                         ncol= (list_plot %>% length %>% sqrt %>% as.integer), -->
+<!--                         labels=names(table(seuratObjRef@meta.data[[variable.plot]]))) -->
+
+<!-- saveMeta(savefnc = cowplot::save_plot,  -->
+<!--          plot=p1, -->
+<!--           ncol= (list_plot %>% length %>% sqrt %>% as.integer), -->
+<!--           filename =  paste0("/data/pub-others/aizarani-nature-2019/output/aizarani_tnse_", variable.plot, "_grid.pdf"), -->
+<!--           base_height = 15, # of a subplot -->
+<!--           #base_width = 5, -->
+<!--           base_aspect_ratio = 0.4, -->
+<!--           limitsize=F) -->
+<!-- ``` -->
+
+
+```{r}
+saveMeta(savefnc=saveRDS, object = seuratObjQuery, file = here("output",paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz")))
+```
+
+exclude certain cell types for gene network analysis
+
+```{r}
+seuratObjQuery_subwgcna <- 
+  subset(x=seuratObjQuery, 
+         cells = colnames(seuratObjQuery)[!seuratObjQuery$cluster_perslab_coarse %in% c("Erythrocytes","B-cells-mature","Plasma-cells")])
+```
+
+```{r}
+saveMeta(savefnc=saveRDS, object = seuratObjQuery_subwgcna, file = here("output",paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj_subWGCNA.RDS.gz")))
+```
+
+<!-- ## Find markers  -->
+
+<!-- in Aizarani et al -->
+
+<!-- ```{r} -->
+<!-- clusters = names(table(seuratObjRef$cluster)) -->
+<!-- Idents(seuratObjRef) <-seuratObjRef$cluster  -->
+<!-- list_iterable = list("X"=clusters) -->
+<!-- fun = function(cluster) {tryCatch({ -->
+<!--   FindMarkers(seuratObjRef,   -->
+<!--               #cells.1=colnames(seurat_obj)[Idents(seurat_obj)==cluster], -->
+<!--               #cells.2=NULL, -->
+<!--               ident.1 = cluster, -->
+<!--               only.pos = T, -->
+<!--               #ident.2 = clusters[clusters!=cluster], -->
+<!--               test.use  ="MAST", -->
+<!--               max.cells.per.ident=1000, -->
+<!--               random.seed=randomSeed, -->
+<!--               #latent.vars = if (!is.null(merge_specify) | !is.null(merge_group_IDs)) "sample_ID" else NULL, -->
+<!--               verbose = T) -->
+<!-- },  -->
+<!-- error = function(err) { -->
+<!--   NA_character_ -->
+<!-- })} -->
+<!-- list_markers=NULL -->
+<!-- list_markers <- lapply(FUN=fun, "X"=list_iterable[[1]]) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # add the gene and cluster as a column -->
+<!-- list_markers <- mapply(function(df_markers, cluster) { -->
+<!--   if (!all(sapply(df_markers, is.na))) { -->
+<!--     cbind("gene" = rownames(df_markers), "cluster"=rep(cluster, nrow(df_markers)), df_markers) -->
+<!--   } else { -->
+<!--     NA_character_ -->
+<!--   } -->
+<!-- }, -->
+<!-- df_markers=list_markers,  -->
+<!-- cluster=names(table(Idents(seuratObjRef))), SIMPLIFY=F) -->
+
+<!-- list_markers <- list_markers[!sapply(list_markers, function(markers) all(is.na(markers)))] -->
+<!-- df_markers <- Reduce(x=list_markers, f=rbind) -->
+<!-- rownames(df_markers) <- NULL -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- saveMeta(savefnc=openxlsx::write.xlsx, x = df_markers, file="/data/pub-others/aizarani-nature-2019/output/aizarani-nature-2019-clustermarkers.xlsx") -->
+<!-- ``` -->
+
+

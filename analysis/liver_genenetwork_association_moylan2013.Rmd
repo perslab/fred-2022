@@ -1,0 +1,334 @@
+---
+title: 'Liver - gene network metadata association analysis'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
+#library("Seurat")
+
+library("data.table")
+library("Matrix")
+library("parallel")
+#library("readr")
+library("tidyverse")
+#library("dplyr")
+#library("ggplot2")
+library("here")
+#library("rlm")
+library("boot")
+#library("corrr")
+#library("lme4")
+#library("WGCNA")
+#devtools::install_github(repo = "satijalab/seurat", ref = "develop")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+RNGkind("L'Ecuyer-CMRG")
+# ?boot
+# For most of the boot methods the resampling is done in the master process, but not if simple = TRUE nor sim = "parametric". In those cases (or where statistic itself uses random numbers), more care is needed if the results need to be reproducible. Resampling is done in the worker processes by censboot(sim = "wierd") and by most of the schemes in tsboot (the exceptions being sim == "fixed" and sim == "geom" with the default ran.gen).
+# 
+# Where random-number generation is done in the worker processes, the default behaviour is that each worker chooses a separate seed, non-reproducibly. However, with parallel = "multicore" or parallel = "snow" using the default cluster, a second approach is used if RNGkind("L'Ecuyer-CMRG") has been selected. In that approach each worker gets a different subsequence of the RNG stream based on the seed at the time the worker is spawned and so the results will be reproducible if ncpus is unchanged, and for parallel = "multicore" if parallel::mc.reset.stream() is called: see the examples for mclapply. 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+nRep = 10000 # bootstrap replicates
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+```
+
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+#prefixOut <- "SCT"
+prefixOut <- "moylan2013_wgcna_assoc"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module_merged"
+colCellCluster = "cell_cluster_merged"
+# naming convention:
+# <prefixData>_<prefixRun>_<prefixOut>_<outputType>_<params>_<params>_..._<date>.pdf
+
+```
+
+## load data
+
+```{r}
+dt_datExpr <- fread(here("data", "moylan2013.norm.expr.csv.gz"))
+```
+
+convert columns to numeric 
+
+```{r}
+strTmp <- colnames(dt_datExpr[,-"gene"])
+dt_datExpr[, (strTmp) := lapply(.SD, as.numeric), .SDcols = strTmp]
+```
+
+```{r}
+dt_metadata <- fread(here("data", "moylan2013.metadata.csv"))
+```
+
+transform fibrosis to indicator variable
+```{r}
+dt_metadata[,fibrosis:=ifelse(fibrosis=="advanced",1,0),]
+```
+
+load data.table with information on module and cell type of origin
+
+```{r}
+path_geneModule <- paste0(dirWGCNA_tables,"liver_perslab_int_wgcna2_cell_cluster_module_genes_subCellClusters_merged.csv.gz")
+  
+dt_geneModule <- fread(path_geneModule)
+
+head(dt_geneModule)
+```
+
+# analysis
+
+## compute module embeddings in Moylan et al data
+
+```{r}
+
+# NB: for some reason, in data.table, when querying rows, it seems the ..<variable> indexing doesn't work. So we need to hard-code it.
+
+dt_geneModule[,..colModule][[1]]%>% unique -> mods_iter
+
+mods_iter<- mods_iter[!is.na(mods_iter)]
+
+mat_embed <- sapply(mods_iter, function(mod) {
+
+  # get gene weights
+  vec_pkMs <- dt_geneModule[module_merged==mod, pkMs,]
+
+  # normalize module gene weights to sum to 1
+  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+
+  # find corresponding rows of the expression matrix
+  vec_idxRow <- match(dt_geneModule[module_merged==mod, genes, ], dt_datExpr[,gene])
+
+  # filter out mis-matches
+  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
+  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+
+  # compute weighted sum of normalized expression
+  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
+
+  vec_pkMs %*% mat_sub
+
+})
+
+rownames(mat_embed) <- colnames(dt_datExpr)[-1]
+
+mat_embed %>% head
+```
+
+# Are any modules zero in all samples (because the genes aren't found in the bulk dataset) ? 
+```{r}
+vec_allZero <- apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))
+table(vec_allZero)
+# FALSE
+#  112
+```
+
+```{r}
+
+if (any(vec_allZero)) {
+  # get rid of all-zero columns, i.e. modules where none of the genes were matched in the bulk expression data
+  mat_embed <- mat_embed[,!apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))]
+
+  dim(mat_embed)
+}
+```
+
+# Correlation analysis
+
+## Moylan 2013
+
+Since we don't have access to other patient metadata, we can only perform a simple correlation analysis
+
+```{r}
+fnc_stat <- function(data, indices) {
+  apply(X=data, MARGIN = 2, FUN = function(vec_modEmbed) {
+  vec_idx =  match(dt_metadata[,geo_accession], names(vec_modEmbed))
+  #vec_idx = vec_idx[!is.na(vec_idx)] # should not be necessary
+  cor(x=dt_metadata[vec_idx,fibrosis],
+      y=vec_modEmbed[indices], #this is where boot scrambles the observations
+      method="pearson")
+  })  
+}
+
+set.seed(seed=randomSeed)
+        
+boot_out <- boot::boot(data=mat_embed, 
+                       statistic = fnc_stat,
+                       R = nRep,
+                       sim = "ordinary",
+                       stype = "i",
+                       parallel = getOption("boot.parallel"),
+                       ncpus = getOption("boot.ncpus"))
+        
+```
+
+### Compute empirical p-value
+
+```{r}
+vec_p.value <- sapply(1:length(boot_out[["t0"]]), FUN = function(j) {
+  p.value <- (sum(boot_out[["t"]][,j] > abs(boot_out[["t0"]][j]) | 
+                   boot_out[["t"]][,j] < -abs(boot_out[["t0"]][j])) + 2) / nRep 
+})
+```
+
+gather the results in a data frame
+
+```{r}
+
+dt_metadataAssoc <- data.table(
+  cell_cluster =  dt_geneModule[!duplicated(module),][match(colnames(mat_embed), module),cell_cluster],
+  module = colnames(mat_embed),
+  rho = boot_out[["t0"]],
+  p.value = vec_p.value)
+
+dt_metadataAssoc <- dt_metadataAssoc[order(cell_cluster),]
+dt_metadataAssoc
+```
+
+Filter gene modules to keep only those that are significantly correlated with condition after correcting for multiple testing
+
+```{r}
+dt_metadataAssoc <- dt_metadataAssoc[p.adjust(p.value,method = pval.adjust.method)<=pValThreshold,]
+dim(dt_metadataAssoc)
+
+```
+
+## Plot results
+
+Assign colors to cell types for the plot
+
+```{r}
+set.seed(randomSeed)
+colorvec = sample(x=unique(gsub("\\d","",colors())), size=length(unique(dt_metadataAssoc[,cell_cluster,])), replace=F)
+dt_metadataAssoc[,colors_cell_cluster:=rep(x = colorvec,times = as.numeric(table(dt_metadataAssoc[,cell_cluster,]))),]
+```
+
+Convert cell type to ordered factor
+
+```{r}
+
+orderToUse1 = 1:length(dt_metadataAssoc[,cell_cluster,])
+dt_metadataAssoc[,cell_cluster:=factor(x = dt_metadataAssoc[,cell_cluster,])]
+dt_metadataAssoc[,cell_cluster := reorder(x=dt_metadataAssoc[,cell_cluster,], X = orderToUse1, order=T)]
+
+```
+
+same for modules
+
+```{r}
+
+orderToUse2=1:length(dt_metadataAssoc[,module])
+dt_metadataAssoc[,module:= factor(x = module)]
+dt_metadataAssoc[,module:= reorder(x=module, X = orderToUse2, order=T)]
+
+```
+
+output the plot 
+
+```{r}
+
+# plot
+p <- ggplot(data=dt_metadataAssoc, aes(x=module, y=rho, fill=cell_cluster)) +
+  geom_bar(stat="identity", 
+           position=position_identity()) + #, +
+           #group=cell_cluster) + 
+  #geom_errorbar(aes(ymin=lower, ymax=upper, width=0.2, colour="orange", alpha=0.9, size=1.3)) +
+  scale_colour_discrete(guide=FALSE) +
+  scale_size(guide=FALSE) +
+  scale_alpha(guide=FALSE) +
+  scale_fill_manual(values=unique(dt_metadataAssoc$colors_cell_cluster)) + # this is a kluge
+  scale_y_continuous("Pearson's rho", expand = c(0, 0)#, 
+                     #limits=c(min(data_tmp[["lower"]])-0.5, max(data_tmp[["upper"]])+.5), 
+                     #breaks=as.integer(seq.int(from = min(data_tmp[["lower"]]-0.5), to=max(data_tmp[["upper"]]+0.5), by=1))) +
+  ) + 
+  scale_x_discrete("module") +  
+
+  theme(axis.text.x = element_text(angle=90,hjust=1),#element_blank(),
+      axis.line.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank()) 
+
+saveMeta(savefnc=ggsave,plot = p,filename = here("plots", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_", flagDate, "_module_metadata_rho_plot.pdf")), height=10, width =15)
+
+```
+
+## save correlation analysis results
+
+```{r}
+fwrite(x=dt_metadataAssoc, file=here("output", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_", flagDate, "_results.csv")))
+```

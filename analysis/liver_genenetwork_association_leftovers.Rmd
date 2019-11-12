@@ -1,0 +1,272 @@
+---
+title: "Liver - association leftovers"
+output: html_notebook
+---
+
+Leftover code from abandoned efforts to compute linear models between gene module expression and metadata in sc-RNA seq data from 10 patients
+
+```{r}
+
+# confounders= c("Age","Sex","BMI", "Smoking","Alcohol_use")
+confounders = c("Alcohol_use")
+vec_outcomes = c("fibrosis_grade", "lobular_inflammation_grade")
+```
+
+```{r}
+
+start_time <- Sys.time()
+
+list_list_list_lm <- 
+  lapply(vec_outcomes, function(outcome) {
+    # loop over metdata outcomes
+    list_list_lm <- lapply(dt_geneModuleDict[[colCellCluster]] %>% unique %>% na.omit %>% as.character, function(clust) {
+    # loop over cell clusters
+        
+      #vec_logical_row <- dt_cellModEmbed[,cell_cluster]==clust
+      
+      dt_geneModule[,..colModule, with=F][[1]][grep(clust,dt_geneModule[,..colCellCluster][[1]])] %>% 
+        unique -> vec_clust_modules 
+      
+      dt_cellModEmbed_sub <- dt_cellModEmbed[cell_cluster==clust, 
+                                             j = ..vec_clust_modules]
+      
+      dt_cellModEmbed_sub[,"sample_ID":=dt_cellModEmbed[cell_cluster==clust,sample_ID]]
+      
+      dt_cellModEmbed_sub_sampleIDmedian <- dt_cellModEmbed_sub[,
+                                                                j=lapply(.SD, median),
+                                                                by=sample_ID] 
+    
+                    
+      list_lm <- lapply(vec_clust_modules, function(clust_module) {
+        # loop over cell cluster modules 
+
+        # center and scale module expression to make it more interpretable
+        vec_moduleExpr = dt_cellModEmbed_sub_sampleIDmedian[, ..clust_module] %>% scale %>% as.numeric
+        
+        dt_lm <- data.table(sample_ID = dt_cellModEmbed_sub_sampleIDmedian[,sample_ID],
+                            moduleExpr = vec_moduleExpr)
+                            
+        list_covariates = as.list(1:length(confounders))
+        list_covariates[[outcome]] = NA
+        
+        names(list_covariates) = c(confounders, outcome)
+        
+        for (covariate in names(list_covariates)) {
+          list_covariates[[covariate]] <- 
+            dt_metadataCombined[,..covariate][match(dt_lm[,sample_ID], dt_metadataCombined[,ID])][[1]]
+        }
+        
+        dt_lm <- cbind(dt_lm, as.data.table(list_covariates))
+        
+        fnc_stat = function(data,indices, outcome,confounders) {
+          
+          lm(data = data[indices,], 
+             formula = as.formula(paste0(outcome, " ~ moduleExpr + ", paste0(confounders, collapse="+")))) %>% coefficients()
+        }
+        
+        set.seed(seed=randomSeed)
+        
+        boot_out <- boot::boot(data=dt_lm, 
+                               statistic = fnc_stat,
+                               R = nRep,
+                               sim = "ordinary",
+                               stype = "i",
+                               parallel = getOption("boot.parallel"),
+                               ncpus = getOption("boot.ncpus"),
+                               outcome=outcome,  #... arg
+                               confounders=confounders) #... arg 
+        
+        # lm1 <- lm(data = dt_lm, 
+        #           formula = as.formula(paste0(outcome, " ~ moduleExpr + ", paste0(confounders, collapse="+"))))
+                
+      })
+    
+    names(list_lm) <- vec_clust_modules
+    
+    return(list_lm)
+    
+  })
+  #names(list_list_lm) <-unique(df_cellModEmbed_su$cell_cluster)
+  return(list_list_lm)
+})
+
+names(list_list_list_lm) <- vec_outcomes
+
+end_time <- Sys.time()
+
+message(sprintf("Bootstrap lm done with %s bootstrap reps, time elapsed: %s seconds", nRep, round(end_time - start_time,2)))
+    
+```
+
+<!-- ### Wrangle the linear model summary stats into practical forms  -->
+
+<!-- TODO -->
+
+<!-- ```{r} -->
+
+<!-- list_mat_coef <- lapply(vec_outcomes, function(outcome) { -->
+<!--   sapply(list_list_list_lm[[outcome]], function(list_lm) sapply(list_lm, function(each_lm) each_lm$coefficients) %>% t) %>% Reduce(x=., f=rbind) -->
+<!-- }) -->
+
+<!-- list_mat_p.value <- lapply(vec_outcomes, function(outcome) { -->
+<!--   sapply(list_list_list_lm[[outcome]], function(list_lm) sapply(list_lm, function(each_lm) summary(each_lm)[["coefficients"]][,"Pr(>|t|)"])%>%t) %>% Reduce(x=., f=rbind) -->
+<!-- }) -->
+
+<!-- names(list_mat_coef) <- names(list_mat_p.value) <- vec_outcomes -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- #TODO R squared for two outcomes -->
+
+<!-- list_vec_adj.r.squared <-  lapply(list_list_lm, function(list_lm) sapply(list_lm, function(each_lm) summary(each_lm)$adj.r.squared))  -->
+<!-- vec_adj.r.squared <- unlist(list_vec_R2, use.names = T) -->
+
+<!-- df_adj.r.squared <- data.frame("cell_cluster"=gsub("\\..*$","",names(vec_adj.r.squared)), -->
+<!--                                "module" = gsub("^.*\\.","",names(vec_adj.r.squared)), -->
+<!--                                "adj.r.squared" = vec_adj.r.squared,  -->
+<!--                                row.names = NULL) -->
+
+<!-- ``` -->
+
+## Plot results
+
+
+## 1. Betas with confidence intervals
+
+```{r}
+
+
+for (outcome in vec_outcomes) {
+  
+  set.seed(randomSeed)
+  
+  mat_coef <- list_mat_coef[[outcome]]
+  mat_p.value <- list_mat_p.value[[outcome]]
+  
+  celltype = df_geneModuleDict[[colCellCluster]][match(rownames(mat_coef),df_geneModuleDict[[colModule]])]
+  celltype=celltype[!is.na(celltype)]
+  colorvec = sample(x=unique(gsub("\\d","",colors())), size=length(unique(celltype)), replace=F)
+  colors_celltype = rep(x = colorvec,times = as.numeric(table(celltype)))
+
+  orderToUse1 = 1:length(celltype)
+  celltype <- factor(x = celltype)
+  celltype <- reorder(x=celltype, X = orderToUse1, order=T)
+  
+  
+  module = rownames(mat_coef)[rownames(mat_coef) %in% df_geneModuleDict[[colModule]]] # why not all included #TODO
+  orderToUse2=1:length(module)
+  module <- factor(x = module)
+  module <- reorder(x=module, X = orderToUse2, order=T)
+  names(module) <- module
+
+  df_data =data.frame(celltype, module, colors_celltype)
+
+  data_tmp = df_data # as defined earlier 
+  vec_idx <- match(data_tmp[["module"]], rownames(mat_coef))
+  data_tmp[["beta"]] <- mat_coef[vec_idx, outcome]
+  # data_tmp[["lower"]] <- mat_lmConditionSubtype[vec_idx, "lower"]
+  # data_tmp[["upper"]] <- mat_lmConditionSubtype[vec_idx, "upper"]
+  # 
+  # plot
+  p <- ggplot(data=data_tmp, aes(x=module, y=beta, fill=celltype)) +
+    geom_bar(stat="identity", position=position_identity(), group=celltype) + 
+    #geom_errorbar(aes(ymin=lower, ymax=upper, width=0.2, colour="orange", alpha=0.9, size=1.3)) +
+    scale_colour_discrete(guide=FALSE) +
+    scale_size(guide=FALSE) +
+    scale_alpha(guide=FALSE) +
+    scale_fill_manual(values=unique(data_tmp$colors_celltype)) + # this is a kluge
+    scale_y_continuous("Beta coefficient", expand = c(0, 0)#, 
+                       #limits=c(min(data_tmp[["lower"]])-0.5, max(data_tmp[["upper"]])+.5), 
+                       #breaks=as.integer(seq.int(from = min(data_tmp[["lower"]]-0.5), to=max(data_tmp[["upper"]]+0.5), by=1))) +
+    ) + 
+    scale_x_discrete("module") +  
+  
+    theme(axis.text.x = element_text(angle=90,hjust=1),#element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) 
+  
+  saveMeta(savefnc=ggsave,plot = p,filename = paste0(dirPlots, prefixOut, "_", outcome, "_beta_plot.pdf"), height=10, width =15)
+
+}
+
+```
+
+## Plot results
+
+Betas with confidence intervals
+
+```{r}
+
+  
+
+```
+
+
+## Inspect the linear model summary stats
+
+how does module expression model adj.r.squared vary by celltype?
+
+```{r}
+mat_coef[,"nas_sum"] %>% sort(.,decreasing = T) %>% head
+```
+
+```{r}
+mat_coef[,"nas_sum"] %>% sort(.,decreasing = F) %>% head
+```
+
+```{r}
+mat_coef[,"fibrosis_grade"] %>% sort(.,decreasing = T) %>% head
+```
+
+```{r}
+mat_coef[,"fibrosis_grade"] %>% sort(.,decreasing = F) %>% head
+```
+
+```{r}
+mat_coef[,"lobular_inflammation_grade"] %>% sort(.,decreasing = T) %>% head
+```
+
+```{r}
+mat_coef[,"lobular_inflammation_grade"] %>% sort(.,decreasing = F) %>% head
+```
+
+```{r}
+df_adj.r.squared %>% group_by(.data = ., cell_cluster) %>% 
+  summarise(
+  mean.adj.r.squared= mean(adj.r.squared)) -> df_adj.r.squared.avg
+
+df_adj.r.squared.avg
+```
+
+```{r}
+df_adj.r.squared %>% group_by(.data = ., cell_cluster) %>% 
+  summarise(
+  max.adj.r.squared= max(adj.r.squared)) -> df_adj.r.squared.max
+
+df_adj.r.squared.max
+```
+
+#TODO
+
+* How much variance is due to patient? How much variance do we expect between cells from the same patient? 
+* Check the covariance matrix between the covariates
+* Check residuals - any major outlier patients with big leverage?
+* Shall we do model selection on covariates?
+
+* Check units are correct and how to interpret
+
+* remember that significance threshold = 0.05/N_modules
+
+
+* Does model matrix for sex work?
+* Do we need to include a patient term? 
+    * Probably not workable 
+* Do we need to do a lme model with cell type as mixed effects term? 
+    * Would reduce the number of models, but make it less interpretable. 
+
+
+* Plot some interesting modules in featureplots
+* KEGG and GO analysis on selected modules (VIF wilcoxon)
