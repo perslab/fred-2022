@@ -1,0 +1,384 @@
+---
+title: 'Liver - QC Gerhart 2018 bulk data'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# References:
+
+## Publications
+
+Gerhard,...,DiStefano,2018, J Endocrine Soc, Transcriptomic Profiling of Obesity-Related
+Nonalcoholic Steatohepatitis Reveals a Core Set of Fibrosis-Specific Genes
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6018672/
+
+Leti,...DiStefano,2015, Trans. Res. High-throughput sequencing reveals altered expression of
+hepatic miRNAs in non-alcoholic fatty liver disease-related fibrosis
+https://www.sciencedirect.com/science/article/pii/S1931524415001401?via%3Dihub
+
+DiStefano,...,Gerhard, 2015, Acta Diabetol., Genome-wide analysis of hepatic lipid content
+in extreme obesity
+https://link.springer.com/article/10.1007%2Fs00592-014-0654-3
+
+Garhard,...,DiStefano, 2014, J. Obes., Identification of Novel Clinical Factors Associated with
+Hepatic Fat Accumulation in Extreme Obesity
+https://www.hindawi.com/journals/jobe/2014/368210/
+
+## Raw data
+
+NCBI SRA Raw sequence: https://www.ncbi.nlm.nih.gov/bioproject/512027~~
+
+NCBI download page: https://www.ncbi.nlm.nih.gov/home/download/
+NCBI SRA handbook: https://www.ncbi.nlm.nih.gov/books/NBK47528/
+
+European Nucleotide Archive sequence: https://www.ebi.ac.uk/ena/browser/text-search?query=PRJNA512027
+ENA browser tools: https://github.com/enasequence/enaBrowserTools # MUST BE INSTALLED!!
+
+## metadata 
+
+via email from Johanna DiStefano
+
+# Setup
+
+## Load packages
+
+```{r}
+library("data.table")
+library("Matrix")
+library("parallel")
+library("dplyr")
+library("ggplot2")
+library("here")
+library("corrr")
+library("irlba")
+library("DESeq2")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+```
+
+generic project constants 
+
+```{r}
+#prefixData <- "aizarani"
+prefixData = "gerhard2018"
+prefixRun = "1"
+#prefixOut <- "SCT"
+prefixOut <- "QC"
+```
+
+## load data
+
+```{r}
+path_htseq_outs <- "/data/pub-others/gerhard-j_endocrine_soc-2018/data-htseq-count/"
+list_htseq_outs <- fnc_merge_htseq_count(dir_htseq_count_outs = path_htseq_outs)
+```
+
+```{r}
+mat_datExpr <- list_htseq_outs$mat_counts
+dt_htseq_stats <- list_htseq_outs$dt_stats
+rm(list_htseq_outs)
+```
+
+```{r}
+openxlsx::read.xlsx(xlsxFile = here("data", "gerhard2018_patient_metadata.xlsx")) %>% setDT() -> dt_metadata
+```
+
+```{r}
+dt_sampleID_SRR <- fread("/data/pub-others/gerhard-j_endocrine_soc-2018/Gerhard2018_PRJNA512027.SRR_sample_tsv.txt")
+```
+
+# QC 
+
+add run_accession numbers to metadata
+
+```{r}
+vec_run_accession <- dt_sampleID_SRR$run_accession[match(dt_metadata$DCL.Patient.ID, dt_sampleID_SRR$`sample alias`)]
+```
+
+```{r}
+dt_metadata_run_acc <- data.table("run_accession"=vec_run_accession, dt_metadata)
+dt_metadata_run_acc <- dt_metadata_run_acc[order(run_accession)]
+dt_metadata_run_acc
+```
+
+## metadata
+
+from DiStefano: 
+It appears that samples DLDR_0037-46 and DLDR_61-62 are listed as normal, but are actually fibrotic (F4) samples. Please keep this in mind when you are analyzing the data.
+
+```{r}
+(37:46) %>% paste0("DLDR_00",.) -> vec_fibrotic_1
+  
+(61:62) %>% paste0("DLDR_00",.) -> vec_fibrotic_2
+
+vec_fibrotic <- c(vec_fibrotic_1, vec_fibrotic_2)
+```
+
+```{r}
+dt_metadata_run_acc[DCL.Patient.ID %in% vec_fibrotic,"Diagnosis"] <- "Fibrosis 4"
+dt_metadata_run_acc[DCL.Patient.ID %in% vec_fibrotic,]
+```
+
+```{r}
+table(dt_metadata_run_acc$Diagnosis)
+```
+
+correct duplicate levels by removing whitespace
+
+```{r}
+dt_metadata_run_acc[Diagnosis =="STEATOSIS 2 ","Diagnosis"] <- "STEATOSIS 2" 
+dt_metadata_run_acc[Diagnosis =="STEATOSIS 3 ","Diagnosis"] <- "STEATOSIS 3" 
+```
+
+```{r}
+table(dt_metadata_run_acc$Diagnosis)
+```
+
+```{r}
+dim(mat_datExpr)
+# [1] 60623   185
+
+dim(dt_metadata_run_acc)
+# [1] 192   5
+```
+
+remove .htseq.counts from mat_datExpr colnames
+
+```{r}
+colnames(mat_datExpr) <- gsub("\\.htseq\\.counts","",colnames(mat_datExpr))
+```
+
+we filtered out 7 samples while aligning the RNA seq data. Let's remove them in the metadata as well 
+
+```{r}
+dt_metadata_run_acc <- dt_metadata_run_acc[run_accession %in% colnames(mat_datExpr)]
+```
+
+```{r}
+nrow(dt_metadata_run_acc)
+dim(mat_datExpr)
+```
+
+## expression data
+
+check for duplicate features 
+
+### pre-normalization QC 
+
+```{r}
+mat_datExpr %>% rownames %>% duplicated %>% table
+# FALSE 
+# 60623
+```
+
+check gene names
+
+```{r}
+mat_datExpr %>% rownames %>% nchar %>% summary
+```
+
+### normalize counts
+
+DESeq method
+
+https://hbctraining.github.io/DGE_workshop/lessons/02_DGE_count_normalization.html
+
+create fake metadata (we don't intend to do DE analysis, but DESeq2 requires it.. )
+
+```{r}
+df_meta_fake <- data.frame(row.names = colnames(mat_datExpr), "sample_annotation"=factor(sample(x = as.character(0:9),size=ncol(mat_datExpr), replace=T)))
+```
+
+```{r}
+# create DESeq2 data object
+dds <- DESeqDataSetFromMatrix(countData = mat_datExpr, 
+                              colData = df_meta_fake, 
+                              design = ~ sample_annotation)
+```
+
+To perform the median of ratios method of normalization, DESeq2 has a single estimateSizeFactors() function that will generate size factors for us. We will use the function in the example below, but in a typical RNA-seq analysis this step is automatically performed by the DESeq() function, which we will see late
+
+```{r}
+dds <- estimateSizeFactors(dds)
+```
+
+```{r}
+mat_datExpr_norm <- counts(dds, normalized=TRUE)
+
+rm(dds)
+mat_datExpr_norm[0:4,0:4]
+```
+
+
+## QC normalized counts
+
+Outlier check : PCA
+
+```{r}
+set.seed(randomSeed)
+irlba_out <- irlba(A = mat_datExpr_norm, nv = 6)
+```
+
+Check how the samples look on singular components 1 and 2, coloured by fibrosis
+
+```{r}
+df <- as.data.frame(irlba_out$v)
+df[["Diagnosis"]] <- dt_metadata_run_acc$Diagnosis
+df[["sample"]] <- colnames(mat_datExpr_norm)
+```
+
+Singular vectors 1 and 2
+```{r}
+ggplot(data = df, aes(x=V1, y=V2), label=sample) + 
+  geom_point(size=5, aes(colour=Diagnosis)) +
+  geom_text(aes(label=as.character(sample)),hjust=0,vjust=0)
+```
+
+Singular vectors 3 and 4
+```{r}
+ggplot(data = df, aes(x=V3, y=V4), label=sample) + 
+  geom_point(size=5, aes(colour=Diagnosis)) +
+  geom_text(aes(label=as.character(sample)),hjust=0,vjust=0)
+```
+
+Singular vectors 5 and 6
+```{r}
+ggplot(data = df, aes(x=V5, y=V6), label=sample) + 
+  geom_point(size=5, aes(colour=Diagnosis)) +
+  geom_text(aes(label=as.character(sample)),hjust=0,vjust=0)
+```
+
+sample SRR8378529 is an outlier on PC 1. How much variance do they account for?
+
+```{r}
+irlba_out$d
+# [1] 70893897.7  5667674.4  4048015.5  1337544.8   917705.5   573675.3
+```
+
+```{r}
+mat_datExpr_norm <- mat_datExpr_norm[,-which(colnames(mat_datExpr_norm)=="SRR8378529.htseq.counts")]
+dim(mat_datExpr_norm)
+# 1] 60623   184
+```
+
+```{r}
+dt_metadata_run_acc <- dt_metadata_run_acc[run_accession!="SRR8378529",]
+dim(dt_metadata_run_acc)
+```
+
+add a fake metadata 'dataset' variable for WGCNA script to subset by
+
+```{r}
+dt_metadata_run_acc$data <- "gerhard2018"
+```
+
+### make a copy of the datExpr replacing ensembl with hgnc gene names
+
+```{r}
+dt_datExpr_norm <- data.table("gene"=rownames(mat_datExpr_norm),mat_datExpr_norm)
+```
+
+```{r}
+dt_datExpr_norm_hgnc <- gene_map(dataIn = dt_datExpr_norm, 
+                                 colGene = "gene", 
+                                 df_mapping = fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz"), 
+                                 from = "ensembl_gene_id", 
+                                 to = "hgnc_symbol", 
+                                 replace = T, 
+                                 na.rm = T)
+```
+
+```{r}
+dt_datExpr_perslab <- fread(here("output","liver_perslab_int_seurat_7_datExpr_combat.csv.gz"))
+```
+
+```{r}
+dim(dt_datExpr_norm)
+#[1] 60623   185
+dim(dt_datExpr_norm_hgnc)
+#[1] 57827   185
+```
+
+We only lost ~ 2800 genes
+
+any duplicates?
+
+```{r}
+table(duplicated(dt_datExpr_norm_hgnc[[1]]))
+# FALSE  TRUE 
+# 37159 20668 
+```
+
+damn. Ok, better map perslab data to ensembl to avoid averaging..
+(in liver_cells_prep_WGCNA.Rmd)
+
+## wrap up 
+
+datExpr ensembl 
+
+```{r}
+fwrite(dt_datExpr_norm, here("data", paste0(prefixData, "_norm.counts.csv.gz")), compress="gzip")
+```
+
+<!-- datExpr hgnc -->
+
+<!-- ```{r} -->
+<!-- fwrite(dt_datExpr_norm_hgnc, here("data", paste0(prefixData, "_norm.counts.hgnc.csv.gz")), compress="gzip") -->
+<!-- ``` -->
+
+metadata
+
+```{r}
+fwrite(dt_metadata_run_acc, here("data", paste0(prefixData, "_patient_metadata_qc.csv.gz")), compress="gzip")
+```
+

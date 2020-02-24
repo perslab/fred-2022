@@ -85,7 +85,7 @@ getDTthreads()
 randomSeed = 12345
 set.seed(randomSeed)
 
-pval.adjust.method = "BH"
+pAdjustMethod = "BH"
 pValThreshold = 0.05#params$pValThreshold
 
 nRep = 10000 # bootstrap replicates
@@ -262,7 +262,7 @@ dt_metadataAssoc
 Filter gene modules to keep only those that are significantly correlated with condition after correcting for multiple testing
 
 ```{r}
-dt_metadataAssoc <- dt_metadataAssoc[p.adjust(p.value,method = pval.adjust.method)<=pValThreshold,]
+dt_metadataAssoc <- dt_metadataAssoc[p.adjust(p.value,method = pAdjMethod)<=pValThreshold,]
 dim(dt_metadataAssoc)
 
 ```

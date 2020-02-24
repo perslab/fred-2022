@@ -37,12 +37,6 @@ options(stringsAsFactors = F,
         )
 ```
 
-## source utility functions
-
-```{r}
-source("./perslab-sc-library/utility_functions.R")
-```
-
 ## Load packages
 
 ```{r}
@@ -67,6 +61,13 @@ library("sva") #https://static-content.springer.com/esm/art%3A10.1186%2Fs13059-0
 # https://www.bioconductor.org/packages/release/bioc/html/sva.html
 
 #ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr",  "AUCell", "Oscope", "openxlsx", "here"))
+```
+
+
+## source utility functions
+
+```{r}
+source(here("perslab-sc-library","utility_functions.R"))
 ```
 
 ## Set constants
@@ -110,6 +111,8 @@ head(seuratObj@meta.data)
 
 ```{r}
 seuratObj@active.assay <- "RNA"
+#seuratObj@active.assay <- "integrated"
+
 ```
 
 ## Cell-cycle analysis 
@@ -173,12 +176,15 @@ p<-FeaturePlot(object = seuratObj,
                label = F, 
                split.by = "sample_ID")
 saveMeta(savefnc=ggsave, plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_CC.Difference_cellcycle_featPlot_splitClust.pdf")), width=40, height=8)
+2
 
 p <- FeaturePlot(object = seuratObj, 
                  features=c("CC.Difference"), 
                  blend = F, 
                  label = F)
-saveMeta(savefnc=ggsave, plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_CC.Difference_cellcycle_featPlot")), width=12, height=12)
+
+saveMeta(savefnc=ggsave,plot=p,filename = here("plots",paste0(prefixData, "_", prefixRun,  "_", seuratObj@active.assay,"_CC.Difference_cellcycle_featPlot.pdf")), width=12, height=12)
+
 ```
 
 ## Re-integrate data using sc-transform workflow
@@ -309,9 +315,9 @@ saveMeta(savefnc= ggsave, plot= p1, filename = here("plots", paste0(prefixData, 
 p2 <- DimPlot(seuratObjIntegrated, 
               reduction="umap",
               group.by = c("sample_ID"),
-              label = T)
+              label = F)
 
-saveMeta(savefnc=ggsave, plot =p2, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_UMAP_sampleID.pdf")), width=20, height=12)
+saveMeta(savefnc=ggsave, plot =p2, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_UMAP_sampleID.pdf")), width=15, height=15)
 ```
 
 ## Find cluster markers 

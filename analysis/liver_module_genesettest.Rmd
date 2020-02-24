@@ -96,6 +96,9 @@ genesetLengthMax = 1000
 nRep = 10000 # bootstrap replicates
 # maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
 flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+alpha =  0.25 # for GERR calling glmnet elasticnet, alpha \in [0,1], alpha==0 => ridge regression, alpha==1 => LASSO regression. Defaults to 0.5
+        # ?gerr::regression_selected_pathways
 ```
 
 
@@ -133,29 +136,31 @@ head(dt_geneModule)
 gene network phenotype association results - to select associated networks for geneset tests
 
 ```{r}
-path_dt_metadataAssoc = here("output", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_", flagDate, "_results.csv"))
+path_dt_metadataAssoc = here("output", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_", "191111_results.csv"))
 dt_metadataAssoc <- fread(path_dt_metadataAssoc)
 ```
 
 get a vector of all the genes as a background for gene test
 
 ```{r}
-seuratObj <- load_obj("/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz")
+if (F) {
+  seuratObj <- load_obj("/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz")
+  
+  Seurat::DefaultAssay(seuratObj) = "RNA"
+  
+  vec_allGenes <- rownames(seuratObj)
+  
+  length(vec_allGenes)
+  #[1] 36116
+  
+  saveRDS(vec_allGenes, file = "/projects/jonatan/pub-perslab/18-liver-fred/output/vec_allGenes.RDS")
+  
+  rm(seuratObj)
+}
 ```
 
 ```{r}
-Seurat::DefaultAssay(seuratObj) = "RNA"
-
-vec_allGenes <- rownames(seuratObj)
-
-length(vec_allGenes)
-#[1] 36116
-```
-
-```{r}
-saveRDS(vec_allGenes, file = "/projects/jonatan/pub-perslab/18-liver-fred/output/vec_allGenes.RDS")
-
-rm(seuratObj)
+vec_allGenes <- readRDS("/projects/jonatan/pub-perslab/18-liver-fred/output/vec_allGenes.RDS")
 ```
 
 ### genesets
@@ -163,9 +168,9 @@ rm(seuratObj)
 #### download gene ontology genesets
 
 ```{r}
-data(bods)
-
-list_list_vec_genesetsGO <- bods(species = "human", pkg.name=NULL, id.type = "eg")
+#data(bods)
+#list_list_vec_genesetsGO <- bods(species = "human", pkg.name=NULL, id.type = "eg")
+list_list_vec_genesetsGO <- go.gsets(species = "human", pkg.name=NULL, id.type = "eg")
 
 list_vec_genesetsGO <- list_list_vec_genesetsGO[[1]]
 ```
@@ -231,7 +236,7 @@ Make a list of vectors of genes in the WGCNA gene modules
 
 ```{r}
 
-# very painful to iterate over row conditions. Ended up resorting to dplyr
+# very painful to iterate over row conditions in data.table. Ended up resorting to dplyr
 # see https://stackoverflow.com/questions/39005117/select-rows-in-data-table-using-a-variable
 # NB: enclosing condition in quote() didn't work
 
@@ -289,13 +294,13 @@ list_gaussResGO <- lapply(list_vec_modGenes, function(vec_modGenes) {
   regression_selected_pathways(gene_input=vec_modGenes, 
                                gene_pathway_matrix = gene_pathway_matrixGO,
                                family="gaussian",
-                               alpha=0.5)})
+                               alpha=alpha)})
 ```
 
 ### gather the results in a data.table
 
 ```{r}
-vec_module <- rep(names(list_gaussRes), sapply(list_gaussResGO, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
+vec_module <- rep(names(list_gaussResGO), sapply(list_gaussResGO, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
 ```
 
 ```{r}
@@ -383,7 +388,7 @@ list_gaussResKEGG <- lapply(list_vec_modGenes, function(vec_modGenes) {
   regression_selected_pathways(gene_input=vec_modGenes, 
                                gene_pathway_matrix = gene_pathway_matrixKEGG,
                                family="gaussian",
-                               alpha=0.5)})
+                               alpha=alpha)})
 ```
 
 ### gather results in a data.table

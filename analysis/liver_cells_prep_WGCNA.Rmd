@@ -1,5 +1,5 @@
 ---
-title: 'Liver - gene network geneset tests'
+title: 'Liver - correct sample confounding in sc data before WGCNA'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -35,6 +35,7 @@ library("Matrix")
 library("Seurat")
 library("here")
 library("magrittr")
+library("sva")
 ```
 
 ## source utility functions
@@ -163,7 +164,7 @@ But how can ComBat distinguish between variables to adjust for and those not to 
 # head(mat_modNull)
 # ```
 
-Filter out genes with very low variance
+Filter out genes with very low variance across all cell types
 
 ```{r}
 vec_logicalGoodGenes <- WGCNA::goodGenes(datExpr = t(mat_expr), minFraction = 0.01, verbose = T) 
@@ -174,10 +175,10 @@ mat_expr <- mat_expr[vec_logicalGoodGenes,]
 Use combat to correct the mean and variance in each sample 
 
 ```{r}
-mat_expr_combat = ComBat(dat=mat_expr, 
-                      batch = seuratObj$sample_ID,
-                      #mod=mat_modNull,
-                      mean.only=F)
+mat_expr_combat = sva::ComBat(dat=mat_expr, 
+                              batch = seuratObj$sample_ID,
+                              #mod=mat_modNull,
+                              mean.only=F)
 ```
 
 ```{r}
@@ -190,30 +191,52 @@ mat_expr_combat[1:5,1:3]
 # RP11-206L10.2      -0.0004197211      -0.0004197211      -0.0004197211
 ```
 
-Run PCA
+## remove artificially introduced non-zero counts
 
 ```{r}
-seuratObj_combat <- CreateSeuratObject(counts = mat_expr_combat, 
-                                       assay = "SCT_combat", 
-                                       meta.data = seuratObj@meta.data)
-
+idx = mat_expr==0 & mat_expr_combat!=0
 ```
 
 ```{r}
+mat_expr_combat[idx] <- 0
+```
 
-seuratObj_combat <- FindVariableFeatures(seuratObj_combat, assay = "SCT_combat")
+```{r}
+mat_expr_combat[1:5,1:3]
+#               AAACCTGAGCGTGAAC_1 AAACCTGAGCTCCTCT_1 AAACGGGCATGCAATC_1
+# AL627309.1                     0                  0                  0
+# AP006222.2                     0                  0                  0
+# RP4-669L17.10                  0                  0                  0
+# RP11-206L10.3                  0                  0                  0
+# RP11-206L10.2                  0                  0                  0
+```
 
-seuratObj_combat <- ScaleData(object = seuratObj_combat, 
+# process data to plot it
+
+```{r}
+seuratObj[["SCT_combat"]] <- CreateAssayObject(counts = mat_expr_combat)
+```
+
+```{r}
+DefaultAssay(seuratObj) <- "SCT_combat"
+```
+
+## do standard dimensional reduction workflow to visualize effects of ComBat
+
+```{r}
+seuratObj <- FindVariableFeatures(seuratObj, assay = "SCT_combat")
+
+seuratObj <- ScaleData(object = seuratObj, 
                               assay = "SCT_combat",
                               min.cells.to.block = 25000)
 
-seuratObj_combat<- RunPCA(seuratObj_combat, 
+seuratObj<- RunPCA(seuratObj, 
                     assay = "SCT_combat",
                     npcs = npcs, 
                     seed.use=randomSeed,
                     verbose = FALSE)
 
-seuratObj_combat <- RunUMAP(seuratObj_combat,
+seuratObj <- RunUMAP(seuratObj,
                             dims=1:npcs,
                             reduction = "pca",
                             assay=  "SCT_combat",
@@ -227,21 +250,19 @@ seuratObj_combat <- RunUMAP(seuratObj_combat,
 pca 
 
 ```{r}
-DimPlot(object = seuratObj_combat, 
+DimPlot(object = seuratObj, 
         1:2, 
         assay=  "SCT_combat",
         reduction = "pca", 
         group.by = "sample_ID",
         label = F)
-
-
 ```
 
 umap 
 
 ```{r}
 
-p <- DimPlot(object = seuratObj_combat, 
+p <- DimPlot(object = seuratObj, 
         1:2, 
         assay=  "SCT_combat",
         reduction = "umap", 
@@ -254,7 +275,7 @@ saveMeta(savefnc=ggsave, plot =p, filename = here("plots", paste0(prefixData, "_
 umap, coloured by cell cluster as identified in integrated data
 
 ```{r}
-p1 <- DimPlot(object = seuratObj_combat, 
+p1 <- DimPlot(object = seuratObj, 
         1:2, 
         assay=  "SCT_combat",
         reduction = "umap", 
@@ -288,15 +309,105 @@ DimPlot(object = seuratObj,
 
 ```
 
-Data looks MUCH better than before! Ready for WGCNA and NMF gene network analysis!
-
 Save ComBat corrected object
 
 ```{r}
-pathSeuratObj_combat = "/nfsdata/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj_combat.RDS.gz"
+saveMeta(savefnc = saveRDS, 
+         object =seuratObj, 
+         file = pathSeuratObj, 
+         compress="gzip")
+```
 
-saveMeta(savefnc = saveRDS, object =seuratObj_combat, 
-         file = pathSeuratObj_combat, compress="gzip")
+```{r}
+dt_datExpr <- data.table("genes"=rownames(mat_expr_combat), mat_expr_combat)
+```
+
+also map to ensembl (for compatibility with e.g. Gerhard 2018)
+
+
+```{r}
+dt_datExpr_ensembl <- gene_map(dataIn = dt_datExpr, 
+                                 colGene = "genes", 
+                                 df_mapping = fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz"), 
+                                 from = "hgnc_symbol", 
+                                 to = "ensembl_gene_id", 
+                                 replace = T, 
+                                 na.rm = T)
+```
+
+```{r}
+dt_datExpr_ensembl[0:4,0:4]
+```
+
+```{r}
+dt_datExpr_ensembl$ensembl_gene_id %>% is.na %>% table
+# .
+# FALSE 
+# 17962
+```
+
+```{r}
+dt_datExpr_ensembl$ensembl_gene_id%>%duplicated%>%table
+# .
+# FALSE  TRUE 
+# 17961     1 
+```
+
+```{r}
+idx_dup <- dt_datExpr_ensembl$ensembl_gene_id%>%duplicated%>%which
+```
+
+```{r}
+dt_datExpr_ensembl$ensembl_gene_id[idx_dup]
+# [1] "ENSG00000259305"
+```
+
+```{r}
+sdcols <- colnames(dt_datExpr_ensembl)[-1]
+vec_tmp <- dt_datExpr_ensembl[ensembl_gene_id=="ENSG00000259305",lapply(.SD,mean),.SDcols=sdcols]
+```
+
+```{r}
+dt_datExpr_ensembl_mean <- dt_datExpr_ensembl[!idx_dup,]
+```
+
+```{r}
+dim(dt_datExpr_ensembl_mean)
+```
+
+```{r}
+dt_datExpr_ensembl_mean[ensembl_gene_id=="ENSG00000259305",2:21008] <- vec_tmp
+```
+
+```{r}
+dim(dt_datExpr)
+#[1] 24609 21008
+dim(dt_datExpr_ensembl)
+#[1] 17962 21008
+dim(dt_datExpr_ensembl_mean)
+#[1] 17961 21008
+```
+
+```{r}
+dt_datExpr_ensembl_mean[ensembl_gene_id=="ENSG00000259305",1:5]
+```
+
+## write out results
+
+```{r}
+fwrite(dt_datExpr, file = here("output",paste0(prefixData, "_", prefixRun, "_datExpr_combat.csv.gz")), compress = "gzip")
+```
+
+```{r}
+fwrite(dt_datExpr_ensembl_mean, file = here("output",paste0(prefixData, "_", prefixRun, "_datExpr_combat_ensembl.csv.gz")), compress = "gzip")
+```
+
+```{r}
+dt_metadata <- data.table("cell_id" = rownames(seuratObj@meta.data), seuratObj@meta.data)
+```
+
+```{r}
+fwrite(dt_metadata, file = here("data", paste0(prefixData, "_", prefixRun, "_metadata_full.csv.gz")), compress="gzip")
 ```
 
 <!-- Alternative:  -->

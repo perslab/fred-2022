@@ -41,7 +41,7 @@ options(stringsAsFactors = F,
 randomSeed = 12345
 set.seed(randomSeed)
 
-pval.adjust.method = "BH"
+pAdjMethod = "BH"
 pValThreshold = 0.05 #params$pValThreshold
 
 flagDate = substr(gsub("-","",as.character(Sys.Date())),3,1000)
@@ -72,7 +72,7 @@ library("corrplot")
 ## source utility functions
 
 ```{r}
-source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
 ```
 
@@ -84,7 +84,7 @@ generic project constants
 #prefixData <- "aizarani"
 prefixData = "liver_perslab_int"
 prefixRun = "seurat_7"
-#prefixOut <- "SCT"
+prefixRunWGCNA = "wgcna3"
 prefixOut <- "SCTint"
 
 dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
@@ -92,11 +92,12 @@ dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
 dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
 dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
-colModule = "module"
-colCellCluster = "cell_cluster"
+colModule = "module_pres"
+colCellCluster = "cell_cluster_pres"
 ```
 
 we are interested in a subset of the "cluster_perslab_coarse" cell types
+
 ```{r}
 vec_celltypesOfInterest <- c("T-cells-alpha-beta",
                              "NK-like-cells",
@@ -116,7 +117,7 @@ Seurat object contains expression data and cell + patient-level metadata
 
 ```{r}
 # path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
-path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj_combat.RDS.gz"))
+path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
 
 seuratObj <- load_obj(path_seuratObj)
 ```
@@ -128,62 +129,73 @@ seuratObj_sub <- subset(x=seuratObj,
                     idents=vec_celltypesOfInterest)
 ```
 
-load gene module cell embedding matrix
+load gene module cell embedding matrices
 
 ```{r}
-path_cellModEmbed <-  paste0(dirWGCNA_tables, prefixData, "_wgcna2_kIM_cellModEmbed.csv.gz")
-  
-dt_cellModEmbed <- fread(path_cellModEmbed)
-
-dt_cellModEmbed[0:6,0:7]
-```
-
-filter 
-
-```{r}
-
-vec_celltypesOfInterest %>% gsub("-","_",.) %>% lapply(., function(eachName) grepl(eachName,colnames(dt_cellModEmbed))) %>% Reduce(f = '|',x=.) %>% which -> vec_colsOfInterest
-
+path_dt_embed_sc <-  paste0(dirWGCNA_tables, prefixData, "_",prefixRunWGCNA,"_kIM_cellModEmbed.csv.gz")
+dt_embed_sc <- fread(path_dt_embed_sc)
+dt_embed_sc[0:4,0:5]
 ```
 
 ```{r}
-dt_cellModEmbed_sub <- dt_cellModEmbed[,c(1:3, ..vec_colsOfInterest),]
+path_dt_embed_moylan2013 <- paste0(dirWGCNA_tables, "moylan2013","_","wgcna1","_modules_sc_cellModEmbed.csv")
+dt_embed_moylan2013 <- fread(path_dt_embed_moylan2013)
+dt_embed_moylan2013[0:4,0:5]
 
-colnames(dt_cellModEmbed_sub)
+```
+
+cbind embeddings
+
+```{r}
+colnames(dt_embed_moylan2013)[2:ncol(dt_embed_moylan2013)] <- paste0("moylan2013__",colnames(dt_embed_moylan2013)[2:ncol(dt_embed_moylan2013)])
 ```
 
 ```{r}
-dim(dt_cellModEmbed_sub)
+dt_embed <- cbind(dt_embed_sc,dt_embed_moylan2013)
+```
+
+filter embeddings to celltypes of interest GOT TO HERE
+
+```{r}
+
+vec_celltypesOfInterest %>% gsub("-","_",.) %>% lapply(., function(eachName) grepl(eachName,colnames(dt_embed_sc))) %>% Reduce(f = '|',x=.) %>% which -> vec_colsOfInterest
+
+```
+
+```{r}
+dt_embed_sc_sub <- dt_embed_sc[,c(1:3, ..vec_colsOfInterest),]
+
+colnames(dt_embed_sc_sub)
+```
+
+```{r}
+dim(dt_embed_sc_sub)
 #[1] 21007   130
 ```
 
 127 modules
 
 <!-- ```{r} -->
-<!-- dt_cellModEmbed_meta <- fread(here("output", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_cellModEmbed_meta.csv"))) -->
+<!-- dt_embed_sc_meta <- fread(here("output", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_cellModEmbed_meta.csv"))) -->
 <!-- ``` -->
 
 load data frame with information on module and cell type of origin
 
 ```{r}
-path_geneModule <- paste0(dirWGCNA_tables,"liver_perslab_int_wgcna2_cell_cluster_module_genes.csv.gz")
+path_geneMod <- paste0(dirWGCNA_tables,"liver_perslab_int_", prefixRunWGCNA,"_geneMod_merged.csv.gz")
   
-dt_geneModule <-fread(file=path_geneModule)
+dt_geneMod <-fread(file=path_geneMod)
 
-head(dt_geneModule)
+dt_geneMod[1,]
 
 #                 data    run   cell_cluster     module         genes      pkMs
 # 1: liver_perslab_int wgcna2 B_cells_mature indianred3 RP13-580B18.4 0.4231437
-# 2: liver_perslab_int wgcna2 B_cells_mature indianred3    CYB561D2.1 0.4226896
-# 3: liver_perslab_int wgcna2 B_cells_mature indianred3         INSL6 0.4225327
-# 4: liver_perslab_int wgcna2 B_cells_mature indianred3        VSTM2B 0.4223379
-# 5: liver_perslab_int wgcna2 B_cells_mature indianred3 RP11-822E23.7 0.4222782
-# 6: liver_perslab_int wgcna2 B_cells_mature indianred3       NUP62CL 0.4218757
+
 ```
 
 ```{r}
 vec_celltypesOfInterest %>% gsub("-","_",.) -> vec_tmp
-dt_geneModule_sub <- dt_geneModule[,module %in% ..vec_tmp,]
+dt_geneMod_sub <- dt_geneMod[,module %in% ..vec_tmp,]
 ```
 
 ```{r}
@@ -218,18 +230,25 @@ dt_metadataAssoc
 Generate a lookup table for module - cell type 
 
 ```{r}
-dt_geneModuleDict <- dt_geneModule[!duplicated(dt_geneModule[[colModule]]),]
+dt_geneModDict <- dt_geneMod[!duplicated(dt_geneMod[[colModule]]),]
 ```
 
 ```{r}
-dt_geneModuleDict[[colModule]] %>% na.omit %>% length
+dt_geneModDict[[colModule]] %>% na.omit %>% length
 # [1] 110
 ```
+
+
+## correlation matrix 
+
+Very high correlations between gene modules could indicate confounding
+
+Even if serious confounding is not suspected, it may make sense to try to merge very overlapping and correlated modules across cell types, which the current cell-type-wise WGCNA workflow does not do.
 
 ## correlation matrix 
 
 ```{r}
-mat_modCor <- cor(x=dt_cellModEmbed_sub[,-c("data", "cell_cluster", "cell_id")],
+mat_modCor <- cor(x=dt_embed_sc_sub[,-c("data", "cell_cluster", "cell_id")],
                                use="pairwise.complete.obs",
                                method="pearson")
 
@@ -243,6 +262,7 @@ dev.off()
 ```
 
 #TODO: 
+
 ## Hierarchically cluster modules
 
 plot the eigengene (kIM embeddings) correlations 
@@ -251,7 +271,7 @@ plot the eigengene (kIM embeddings) correlations
 
 #http://www.sthda.com/english/wiki/beautiful-dendrogram-visualizations-in-r-5-must-known-methods-unsupervised-machine-learning
 
-t(dt_cellModEmbed[,4:ncol(dt_cellModEmbed)]) %>% # data
+t(dt_embed_sc[,4:ncol(dt_embed_sc)]) %>% # data
   scale %>% # Scale the data
   dist %>% # calculate a distance matrix, 
   hclust(method = "ward.D2") -> hc # Hierarchical clustering 
@@ -268,20 +288,20 @@ dendextend::get_leaves_attr(attribute = "label", dend=dend)
 <!-- ```{r} -->
 <!-- dend %>%  -->
 <!--   set(what="labels_col", value=dendextend::get_leaves_attr(attribute = "label", dend=dend)) -> dend # change leaf colors -->
-<!--   #set("leaves_pch", rep(c(1:length(unique(dt_geneModule$cell_cluster))),table(dt_geneModuleDict$cell_cluster)))  # node point type for cell type -->
+<!--   #set("leaves_pch", rep(c(1:length(unique(dt_geneMod$cell_cluster))),table(dt_geneModDict$cell_cluster)))  # node point type for cell type -->
 
 <!-- #plot(dend) -->
 <!-- ``` -->
 
 ```{r}
 
-vec_cellCluster_integer <- brewer.pal(n = length(unique(dt_geneModule[[colCellCluster]])), name="Spectral")
-names(vec_cellCluster_integer) <- unique(dt_geneModule[[colCellCluster]])
+vec_cellCluster_integer <- brewer.pal(n = length(unique(dt_geneMod[[colCellCluster]])), name="Spectral")
+names(vec_cellCluster_integer) <- unique(dt_geneMod[[colCellCluster]])
 
 dend %>% 
   set(what="leaves_pch", value=19) %>%
   set(what="leaves_cex", 2) %>% 
-  set(what="leaves_col", value=vec_cellCluster_integer[match(dt_geneModuleDict[[colCellCluster]][match(get_leaves_attr(attribute = "label", dend=dend), dt_geneModuleDict[[colModule]])], names(vec_cellCluster_integer))]) -> 
+  set(what="leaves_col", value=vec_cellCluster_integer[match(dt_geneModDict[[colCellCluster]][match(get_leaves_attr(attribute = "label", dend=dend), dt_geneModDict[[colModule]])], names(vec_cellCluster_integer))]) -> 
   dend
 
 plot(dend)
@@ -300,7 +320,7 @@ group plots per celltype
 ```{r}
 list_vec_modulesSignif <- lapply(unique(dt_metadataAssoc[,cell_cluster,]), function(cell_clust) {
   dt_metadataAssoc[cell_cluster==cell_clust & 
-                     p.adjust(p.value, method = pval.adjust.method) <= pValThreshold, "module"][[1]]
+                     p.adjust(p.value, method = pAdjMethod) <= pValThreshold, "module"][[1]]
   })
 
 names(list_vec_modulesSignif) <- unique(dt_metadataAssoc[,cell_cluster,])
@@ -310,8 +330,8 @@ list_vec_modulesSignif
 
 ```{r}
 
-dt_metaTmp <- dt_cellModEmbed[,-"cell_id",]
-rownames(dt_metaTmp) <- dt_cellModEmbed[,cell_id,]
+dt_metaTmp <- dt_embed_sc[,-"cell_id",]
+rownames(dt_metaTmp) <- dt_embed_sc[,cell_id,]
 all.equal(rownames(dt_metaTmp), colnames(seuratObj))
 
 #[1] TRUE
@@ -359,22 +379,22 @@ Hence we need to z-score them to plot on a single heatmap
 First order the rows by cell cluster
 
 ```{r}
-dt_cellModEmbed[,cell_cluster:=dt_cellModEmbed_meta[,"cell_cluster",]]
-dt_cellModEmbed <- dt_cellModEmbed[order(cell_cluster)]
+dt_embed_sc[,cell_cluster:=dt_embed_sc_meta[,"cell_cluster",]]
+dt_embed_sc <- dt_embed_sc[order(cell_cluster)]
 ```
 
 ```{r}
-vec_modulesSignif = colnames(dt_cellModEmbed)
+vec_modulesSignif = colnames(dt_embed_sc)
 vec_modulesSignif = vec_modulesSignif[!vec_modulesSignif %in% c("cell_id", "cell_cluster")]
 
-dt_cellModEmbed[,lapply(.SD, scale),, .SDcols=vec_modulesSignif] %>% as.matrix -> mat_cellModEmbed_scaled 
+dt_embed_sc[,lapply(.SD, scale),, .SDcols=vec_modulesSignif] %>% as.matrix -> mat_cellModEmbed_scaled 
 
-rownames(mat_cellModEmbed_scaled) <- dt_cellModEmbed[,c("cell_id")][[1]]
+rownames(mat_cellModEmbed_scaled) <- dt_embed_sc[,c("cell_id")][[1]]
 ```
 
 Find locations for labels halfway through cell types in rows
 ```{r}
-vec_table <- table(dt_cellModEmbed[,cell_cluster,])
+vec_table <- table(dt_embed_sc[,cell_cluster,])
 vec_cumsum <- cumsum(c(1,vec_table)) 
 vec_pos <- sapply(2:length(vec_cumsum), function(i) {
   as.integer(vec_cumsum[i-1]+vec_table[i-1]/2)
@@ -400,10 +420,10 @@ p <- ComplexHeatmap::Heatmap(mat=mat_cellModEmbed_scaled,
 
 
 
-p <- p + rowAnnotation(cell_cluster = dt_cellModEmbed$cell_cluster,
+p <- p + rowAnnotation(cell_cluster = dt_embed_sc$cell_cluster,
     col = list(cell_cluster = colorvec))
 
-# p <- p + columnAnnotation(cell_cluster = dt_geneModuleDict$cell_cluster[match(vec_modulesSignif,dt_geneModuleDict$module)],
+# p <- p + columnAnnotation(cell_cluster = dt_geneModDict$cell_cluster[match(vec_modulesSignif,dt_geneModDict$module)],
 #     col = list(cell_cluster = colorvec))
 
 # p <- p+ rowAnnotation(foo = anno_link(at = vec_pos, which="row", side="right",
@@ -417,5 +437,102 @@ dev.off()
 ```{r}
 #TODO
 # NOT PRIORITY
+```
+
+
+
+### LEFTOVERS FROM LIVER MODULE SC QC  - CHECK ! ###
+
+# QC plotting
+
+
+
+The gene module embeddings are computed using the SC- normalized and ComBat corrected counts. 
+Hence we need to z-score them to plot on a single heatmap
+
+```{r}
+dt_embed_sc_sub[,lapply(.SD, scale),, .SDcols=colnames(dt_embed_sc_sub[,-c("data", "cell_cluster", "cell_id")])] %>% as.matrix -> mat_cellModEmbed_sub_scaled 
+
+colnames(mat_cellModEmbed_sub_scaled) %>% gsub("\\.V1","", .) -> colnames(mat_cellModEmbed_sub_scaled)
+
+rownames(mat_cellModEmbed_sub_scaled) <- dt_embed_sc_sub[,c("cell_id")][[1]]
+
+mat_cellModEmbed_sub_scaled[0:4,0:4]
+
+#                   Cholangiocytes__aliceblue.V1 Cholangiocytes__azure2.V1 Cholangiocytes__black.V1 Cholangiocytes__chocolate.V1
+# TGTCCCACAATGAATG_1                    2.4859331              -0.009620634             -0.001129782                 -0.007353158
+# AAACGGGGTCTACCTC_1                    0.7263057              -0.009620634             -0.001129782                 -0.007353158
+# AAGTCTGGTAATAGCA_1                   -1.6010004              -0.009620634             -0.001129782                 -0.007353158
+# AATCGGTCATGATCCA_1                    3.4825015              -0.009620634             -0.001129782                 -0.007353158
+```
+
+<!-- Find locations for cell type labels halfway through cell types in rows -->
+
+<!-- ```{r} -->
+<!-- vec_cellClustTable <- table(dt_embed_sc_sub[,cell_cluster,]) -->
+<!-- vec_cellClustCumsum <- cumsum(c(1,vec_cellClustTable))  -->
+<!-- vec_cellClustPos <- sapply(2:length(vec_cellClustCumsum), function(i) { -->
+<!--   as.integer(vec_cellClustCumsum[i-1]+vec_cellClustTable[i-1]/2) -->
+<!-- }) -->
+<!-- ``` -->
+
+make colors to identify cell clusters in row annotation
+
+```{r}
+set.seed(randomSeed)
+vec_colorCellClust = sample(x=unique(gsub("\\d","",colors())), size=length(unique(dt_embed_sc_sub[,cell_cluster,])), replace=F)
+names(vec_colorCellClust) =unique(dt_embed_sc_sub[,cell_cluster,])
+vec_colorCellClust
+```
+
+make colors to identify sample_ID in row annotation
+
+```{r}
+set.seed(randomSeed)
+vec_colorSampleID = sample(x=unique(gsub("\\d","",colors())), size=length(unique(seuratObj_sub$sample_ID)), replace=F)
+names(vec_colorSampleID) =unique(seuratObj_sub$sample_ID)
+vec_colorSampleID
+
+```
+<!-- Find locations for labels halfway through sample_ID in rows -->
+
+<!-- ```{r} -->
+
+<!-- vec_cellClustTable <- table(dt_embed_sc_sub[,cell_cluster,]) -->
+<!-- vec_cellClustCumsum <- cumsum(c(1,vec_cellClustTable))  -->
+<!-- vec_cellClustPos <- sapply(2:length(vec_cellClustCumsum), function(i) { -->
+<!--   as.integer(vec_cellClustCumsum[i-1]+vec_cellClustTable[i-1]/2) -->
+<!-- }) -->
+<!-- ``` -->
+
+```{r}
+pdf(file = here("plots", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_", flagDate, "_modEmbedHeatmap.pdf")), width=20, height=20)
+p <- ComplexHeatmap::Heatmap(mat=mat_cellModEmbed_sub_scaled, 
+                             name="Module embeddings",
+                             row_title = "cell",
+                             column_title = "gene module",
+                             cluster_rows = FALSE,
+                             #cluster_cols = FALSE,
+                             show_row_names=FALSE,
+                             use_raster = TRUE, 
+                             raster_quality = 2) 
+
+
+
+p <- p + HeatmapAnnotation(cell_cluster = dt_embed_sc_sub$cell_cluster,
+    col = list(cell_cluster = vec_colorCellClust) ,
+    which="row")
+
+p <- p + HeatmapAnnotation(df = data.frame("sample_ID" = seuratObj_sub$sample_ID[match(dt_embed_sc_sub$cell_id, rownames(seuratObj_sub@meta.data))]),
+    col = list(sample_ID = vec_colorSampleID),
+    which="row")
+
+# p <- p + HeatmapAnnotation(df = data.frame("cell_cluster" = mat_cellModEmbed_sub_scaled %>% colnames %>% gsub("__.*$","", .)),
+#                            col = list(cell_cluster = vec_colorCellClust), 
+#                            which="column")
+
+
+draw(p)
+dev.off()
 ```
 

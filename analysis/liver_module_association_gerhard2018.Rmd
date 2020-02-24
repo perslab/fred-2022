@@ -1,0 +1,270 @@
+---
+title: 'Liver - gene network metadata association analysis in Gerhard 2018 bulk data'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+  pAdjMethod: "BH"
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
+#library("Seurat")
+
+library("data.table")
+library("Matrix")
+library("parallel")
+#library("tidyverse")
+library("here")
+library("boot")
+
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+RNGkind("L'Ecuyer-CMRG")
+# ?boot
+# For most of the boot methods the resampling is done in the master process, but not if simple = TRUE nor sim = "parametric". In those cases (or where statistic itself uses random numbers), more care is needed if the results need to be reproducible. Resampling is done in the worker processes by censboot(sim = "wierd") and by most of the schemes in tsboot (the exceptions being sim == "fixed" and sim == "geom" with the default ran.gen).
+# 
+# Where random-number generation is done in the worker processes, the default behaviour is that each worker chooses a separate seed, non-reproducibly. However, with parallel = "multicore" or parallel = "snow" using the default cluster, a second approach is used if RNGkind("L'Ecuyer-CMRG") has been selected. In that approach each worker gets a different subsequence of the RNG stream based on the seed at the time the worker is spawned and so the results will be reproducible if ncpus is unchanged, and for parallel = "multicore" if parallel::mc.reset.stream() is called: see the examples for mclapply. 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+```
+
+
+generic project constants 
+
+```{r}
+prefixData = "liver_gerhard2018"
+prefixRun = "seurat_7"
+prefixRun_WGCNA = "wgcna2"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module"
+colCellCluster = "cell_cluster"
+# naming convention:
+# <prefixData>_<prefixRun>_<prefixOut>_<outputType>_<params>_<params>_..._<date>.pdf
+
+```
+
+## load data
+
+```{r}
+dt_datExpr <- fread(here("data", "gerhard2018_norm.counts.csv.gz"))
+```
+
+convert columns to numeric 
+
+```{r}
+dt_metadata <- fread(here("data", "gerhard2018_patient_metadata_qc.csv.gz"))
+```
+
+load data.table with information on module and cell type of origin
+
+```{r}
+path_geneMod <- paste0(dirWGCNA_tables,prefixData, "_",prefixRun_WGCNA,"_geneMod.csv.gz")
+  
+dt_geneMod <- fread(path_geneMod)
+
+head(dt_geneMod)
+```
+
+# analysis
+
+subset metadata and transform variables to 0,1,2
+
+```{r}
+dt_metadata_steatosis = dt_metadata[Diagnosis %in% c("NORMAL", "STEATOSIS 2", "STEATOSIS 3"),]
+dt_metadata_steatosis[,condition:=ifelse(Diagnosis=="NORMAL",0,1)]
+dt_metadata_steatosis[Diagnosis=="STEATOSIS 3","condition"] <- 2
+```
+
+```{r}
+dt_metadata_lobinflam = dt_metadata[Diagnosis %in% c("NORMAL","Lob Inflam 1", "Lob Inflam 2"),]
+dt_metadata_lobinflam[,condition:=ifelse(Diagnosis=="NORMAL",0,1)]
+dt_metadata_lobinflam[Diagnosis=="Lob Inflam 2","condition"] <- 2
+```
+
+```{r}
+dt_metadata_fibrosis = dt_metadata[Diagnosis %in% c("NORMAL","Fibrosis 3"),]
+dt_metadata_fibrosis[,condition:=ifelse(Diagnosis=="Fibrosis 3",1,0),]
+```
+
+## compute module embeddings in bulk data
+
+
+```{r}
+
+# NB: for some reason, in data.table, when querying rows, it seems the ..<variable> indexing doesn't work. So we need to hard-code it.
+
+dt_geneMod[data=="liver_gerhard2018",..colModule][[1]]%>% unique -> vec_mods
+
+vec_mods<- vec_mods[!is.na(vec_mods)]
+
+mat_embed <- sapply(vec_mods, function(mod) {
+
+  # get gene weights
+  condition = quote(dt_geneMod[[colModule]]==mod)
+  vec_pkMs <- dt_geneMod[eval(condition), pkMs,]
+
+  # normalize module gene weights to sum to 1
+  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+
+  # find corresponding rows of the expression matrix
+  vec_idxRow <- match(dt_geneMod[eval(condition), genes, ], dt_datExpr[,gene])
+
+  # filter out mis-matches
+  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
+  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+
+  # compute weighted sum of normalized expression
+  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
+
+  vec_pkMs %*% mat_sub
+
+})
+
+rownames(mat_embed) <- colnames(dt_datExpr)[-1]
+
+mat_embed[0:4,0:4]
+```
+
+# Are any modules zero in all samples (because the genes aren't found in the bulk dataset) ? 
+
+```{r}
+vec_allZero <- apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))
+table(vec_allZero)
+# FALSE
+#  33
+```
+
+```{r}
+
+if (any(vec_allZero)) {
+  # get rid of all-zero columns, i.e. modules where none of the genes were matched in the bulk expression data
+  mat_embed <- mat_embed[,!apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))]
+
+  dim(mat_embed)
+}
+```
+
+### combine embeddings and metadata
+
+```{r}
+
+list_dt_model_sub <- lapply(list(dt_metadata_steatosis, dt_metadata_lobinflam, dt_metadata_fibrosis), function(dt_sub) {
+  data.table(dt_sub, mat_embed[dt_sub$sample,])
+})
+names(list_dt_model_sub) <- c("steatosis", "lob_inflam", "fibrosis")
+```
+
+run linear models 
+
+```{r}
+list_list_tbl_regr <- lapply(names(list_dt_model_sub), function(outcome) {
+  dt_model_tmp <- list_dt_model_sub[[outcome]]
+  dt_model_tmp$SEX <- factor(dt_model_tmp$SEX)
+  lapply(vec_mods, function(module) {
+    formula_tmp <- formula(paste0(module, "~ SEX + BMI_surg + Age + condition"))
+    ##mat_model <- model.matrix(object = formula_tmp, data=dt_model_tmp)
+    regr<-lm(formula = formula_tmp, dt_model_tmp)
+    regr %>% broom::tidy() 
+  }) -> list_tbl_tmp 
+  names(list_tbl_tmp) = vec_mods
+  return(list_tbl_tmp)
+})
+
+names(list_list_tbl_regr) <- names(list_dt_model_sub)
+```
+
+extract coefficients for the condition regressors 
+
+```{r}
+lapply(names(list_list_tbl_regr), function(condition) {
+  list_tbl_regr = list_list_tbl_regr[[condition]]
+  mat_out <- sapply(list_tbl_regr, function(tbl_regr) {
+    tbl_regr[tbl_regr$term=="condition",colnames(tbl_regr) %in% c("estimate","std.error","statistic","p.value")] 
+  }) %>% t
+  data.table("module"= rownames(mat_out), "condition"=condition, mat_out)
+}) -> list_dt_condition_coef
+
+names(list_dt_condition_coef) <- names(list_list_tbl_regr)
+```
+
+```{r}
+list_dt_condition_coef[[1]][p.adjust(p=p.value,method=params$pAdjMethod) %>% '<'(params$pValThreshold)]
+```
+
+```{r}
+list_dt_condition_coef[[2]][p.adjust(p=p.value,method=params$pAdjMethod) %>% '<'(params$pValThreshold)]
+```
+
+```{r}
+list_dt_condition_coef[[3]][p.adjust(p=p.value,method=params$pAdjMethod) %>% '<'(params$pValThreshold)]
+```
+
+only one module is significantly associated with any condition after correcting for multiple testing (tomato, associated with fibrosis)
+
+## write out results
+
+```{r}
+for (name in names(list_dt_condition_coef)) {
+  fwrite(x=list_dt_condition_coef[[name]], file=paste0(dirWGCNA_tables, prefixData, "_" , prefixRun_WGCNA, "_", name, "_association_", flagDate,".csv"))
+}
+```

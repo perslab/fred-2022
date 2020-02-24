@@ -1,0 +1,175 @@
+---
+title: 'Liver - gene network metadata association analysis'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+library("dplyr")
+library("Matrix")
+library("parallel")
+library("readr")
+library("openxlsx")
+library("data.table")
+library("here")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+RNGkind("L'Ecuyer-CMRG")
+# ?boot
+# For most of the boot methods the resampling is done in the master process, but not if simple = TRUE nor sim = "parametric". In those cases (or where statistic itself uses random numbers), more care is needed if the results need to be reproducible. Resampling is done in the worker processes by censboot(sim = "wierd") and by most of the schemes in tsboot (the exceptions being sim == "fixed" and sim == "geom" with the default ran.gen).
+# 
+# Where random-number generation is done in the worker processes, the default behaviour is that each worker chooses a separate seed, non-reproducibly. However, with parallel = "multicore" or parallel = "snow" using the default cluster, a second approach is used if RNGkind("L'Ecuyer-CMRG") has been selected. In that approach each worker gets a different subsequence of the RNG stream based on the seed at the time the worker is spawned and so the results will be reproducible if ncpus is unchanged, and for parallel = "multicore" if parallel::mc.reset.stream() is called: see the examples for mclapply. 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pAdjustMethod = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+nRep = 10000 # bootstrap replicates
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+```
+
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+prefixRun_WGCNA = "wgcna1"
+prefixOut <- "moylan2013"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module_pres"
+colCellCluster = "cell_cluster_pres"
+
+```
+
+## load data
+
+expression data 
+
+```{r}
+dt_datExpr <- fread(here("output", "liver_perslab_int_seurat_7_datExpr_combat.csv.gz"))
+```
+
+bulk modules tables
+
+
+```{r}
+path_geneMod <- paste0(dirWGCNA_tables,"liver_moylan2013_", "wgcna1","_geneMod.csv.gz")
+dt_geneMod <-fread(file=path_geneMod)
+```
+
+## Compute cell module embeddings after normalizing gene weights i.e. kIMs
+
+```{r}
+mat_datExpr <- as.matrix(dt_datExpr[,-1])
+rownames(mat_datExpr) <- dt_datExpr[["genes"]]
+mat_datExpr[0:4,0:4]
+```
+
+```{r}
+cellClust = "moylan2013"
+```
+
+```{r}
+vec_cellClust_mods = unique(dt_geneMod[[colModule]][dt_geneMod[[colCellCluster]]==cellClust])
+vec_cellClust_mods <- vec_cellClust_mods[!is.na(vec_cellClust_mods)]
+
+list_mat_embed_tmp <- lapply(vec_cellClust_mods, function(module) {
+  
+  vec_geneWeights <- dt_geneMod[[colGeneWeights]][dt_geneMod[[colModule]]==module]
+  names(vec_geneWeights) <- dt_geneMod[[colGeneNames]][dt_geneMod[[colModule]]==module]
+  
+  idx_datExprGenes = match(names(vec_geneWeights),rownames(mat_datExpr))
+  
+  vec_geneWeights <- vec_geneWeights[!is.na(idx_datExprGenes)]
+  
+  vec_geneWeights <- vec_geneWeights/sum(vec_geneWeights) # normalise gene Weights
+  
+  mat_datExpr_sub <- mat_datExpr[idx_datExprGenes[!is.na(idx_datExprGenes)],]
+
+  mat_out <- t(as.matrix(vec_geneWeights)) %*% mat_datExpr_sub
+
+  return(mat_out)
+})
+
+list_mat_embed_tmp %>% Reduce(x=., f = rbind) %>% t -> mat_embed
+colnames(mat_embed) <- vec_cellClust_mods
+
+mat_embed[1:5,1:5]
+```
+
+## write out files
+
+```{r}
+
+dt_tmp <- data.table("cell_id"=rownames(mat_embed),mat_embed)
+fwrite(x = dt_tmp, file = paste0(dirWGCNA_tables, prefixOut,"_",prefixRun_WGCNA,"_modules_sc_cellModEmbed.csv"))
+
+```
+
+
+

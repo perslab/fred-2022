@@ -1,0 +1,163 @@
+---
+title: 'Liver - gene network geneset tests'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+
+library("Seurat")
+library("data.table")
+library("Matrix")
+library("parallel")
+library("dplyr")
+library("ggplot2")
+library("here")
+
+```
+
+## source utility functions
+
+```{r}
+source(here("perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+
+#options(datatable.WhenJisSymbolThenCallingScope=TRUE)
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+```
+
+generic project constants 
+
+```{r}
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+```
+
+## load data
+
+```{r}
+seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj_combat.RDS.gz"))
+```
+
+```{r}
+dt_markers <- openxlsx::read.xlsx(here("output","liver_perslab_align_seurat_7_SCTransformIntegrated_clustermarkers.xlsx"))
+head(dt_markers)
+```
+
+## plotting
+
+### dot plot
+
+```{r}
+vec_clusters <- unique(seuratObj$cluster_perslab) 
+vec_clusters <- vec_clusters[order(as.numeric(gsub("-.*","",vec_clusters)))]
+```
+
+```{r}
+
+list_markers <- lapply(vec_clusters, function(clust){
+  clust_num <- gsub("-.*","",clust)
+  mycondition = quote(dt_markers$cluster==clust_num)
+  dt_markers[eval(mycondition),"gene"][1:10]
+})
+names(list_markers) <- unique(seuratObj$cluster_perslab)
+vec_markers <- unlist(list_markers, use.names = T)
+names(vec_markers) <- gsub("\\d+$","", names(vec_markers))
+head(vec_markers)
+tail(vec_markers)
+```
+
+```{r}
+factor_cell_clust_group <- factor(vec_clusters, ordered = T)
+```
+
+```{r}
+vec_markers = unique(vec_markers)
+```
+
+```{r,fig.width=18, fig.height=7}
+
+p<-DotPlot_timshel(
+  object=seuratObj,
+  assay="SCT_combat",
+  slot = "data",
+  do.scale=T,
+  genes.plot=rev(vec_markers),#rev(df$gene_name),
+  cols.use = c("blue","white", "red"),#brewer.pal(n=11,"Spectral"),#c("blue","red"),
+  col.min = -2.5,
+  col.max = 2.5,
+  dot.min = 0,
+  dot.scale = 6,
+  group.by="cluster_perslab",
+  group.order=factor_cell_clust_group,
+  plot.legend = T,
+  do.return = T,
+  x.lab.rot = T,
+  coord_flip = F,
+  df.marker.panel.to.plot=NULL#df
+)
+saveMeta(savefnc= ggsave, plot= p, filename = here("plots", paste0(prefixData, "_", prefixRun, "_SCT_combat_clust_markergene_dotplot.pdf")), width = 25, height=10)
+```
+
+featureplots
+
+```{r}
+genes = c("TREM2")
+```
+
+```{r,fig.width=10}
+Seurat::FeaturePlot(object=seuratObj, features="TREM2")
+```
+

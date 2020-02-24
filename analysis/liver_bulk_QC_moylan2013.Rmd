@@ -24,28 +24,24 @@ params:
 #     toc_float: yes
 ---
 
+references: 
+
+* Moylan CA, Pang H, Dellinger A, Suzuki A et al. Hepatic gene expression profiles differentiate presymptomatic patients with mild versus severe nonalcoholic fatty liver disease. Hepatology 2014 Feb;59(2):471-82.  https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE31803
+
 # Setup
 
 ## Load packages
 
 ```{r}
-#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
-#library("Seurat")
-
 library("data.table")
 library("Matrix")
 library("parallel")
-#library("readr")
-#library("tidyverse")
 library("dplyr")
 library("ggplot2")
 library("here")
 library("corrr")
 library("irlba")
 
-#library("lme4")
-#library("WGCNA")
-#devtools::install_github(repo = "satijalab/seurat", ref = "develop")
 ```
 
 ## source utility functions
@@ -89,7 +85,6 @@ prefixData = "liver_moylan2013"
 prefixRun = "1"
 #prefixOut <- "SCT"
 prefixOut <- "QC"
-
 ```
 
 ## load data
@@ -99,7 +94,51 @@ dt_datExpr <- fread(here("data", "moylan2013.norm.expr.csv.gz"))
 ```
 
 ```{r}
-dt_metadata <- fread(here("data", "moylan2013.metadata.csv"))
+dt_metadata  <- fread(here("data", "moylan2013.metadata.csv"))
+```
+
+# QC 
+
+check for duplicate features 
+
+```{r}
+table(duplicated(dt_datExpr$gene))
+# FALSE  TRUE 
+# 22881   640 
+```
+
+```{r}
+vec_samplenames <- colnames(dt_datExpr)[-1]
+```
+
+average gene expression of duplicate genes
+
+```{r}
+dt_datExpr <- dt_datExpr[,lapply(.SD,mean),by="gene", .SDcols = vec_samplenames]
+```
+
+```{r}
+dim(dt_datExpr)
+# ] 22881    73
+```
+
+```{r}
+dt_datExpr[0:5,0:5]
+```
+
+check gene names
+
+```{r}
+summary(nchar(dt_datExpr$gene))
+```
+
+```{r}
+dt_datExpr <- dt_datExpr[nchar(dt_datExpr$gene)>0,]
+```
+
+```{r}
+dim(dt_datExpr)
+# ] 22880    73
 ```
 
 ## Outlier check : PCA
@@ -107,7 +146,6 @@ dt_metadata <- fread(here("data", "moylan2013.metadata.csv"))
 ```{r}
 irlba_out <- irlba(A = as.matrix(dt_datExpr[,-c("gene")]), 
                    nv = 3)
-
 ```
 
 Check how the samples look on singular components 1 and 2, coloured by fibrosis
@@ -122,5 +160,11 @@ ggplot(data = df, aes(x=V1, y=V2)) +
   geom_point(size=5, aes(colour=fibrosis)) 
 ```
 
-Looks prettygood, no extreme outliers, either
+Looks pretty good, no extreme outliers, either
+
+## wrap up 
+
+```{r}
+fwrite(dt_datExpr, here("data", "moylan2013.norm.expr.qc.csv.gz"))
+```
 
