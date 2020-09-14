@@ -1,0 +1,234 @@
+---
+title: 'Liver - compute (prioritised) gene module embeddings in single cell dataset'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+add cell embeddings on prioritised modules to metadata
+
+# Setup
+
+## Load packages
+
+```{r}
+library("dplyr")
+library("Matrix")
+library("parallel")
+library("readr")
+library("openxlsx")
+library("data.table")
+library("here")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+RNGkind("L'Ecuyer-CMRG")
+# ?boot
+# For most of the boot methods the resampling is done in the master process, but not if simple = TRUE nor sim = "parametric". In those cases (or where statistic itself uses random numbers), more care is needed if the results need to be reproducible. Resampling is done in the worker processes by censboot(sim = "wierd") and by most of the schemes in tsboot (the exceptions being sim == "fixed" and sim == "geom" with the default ran.gen).
+# 
+# Where random-number generation is done in the worker processes, the default behaviour is that each worker chooses a separate seed, non-reproducibly. However, with parallel = "multicore" or parallel = "snow" using the default cluster, a second approach is used if RNGkind("L'Ecuyer-CMRG") has been selected. In that approach each worker gets a different subsequence of the RNG stream based on the seed at the time the worker is spawned and so the results will be reproducible if ncpus is unchanged, and for parallel = "multicore" if parallel::mc.reset.stream() is called: see the examples for mclapply. 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pAdjustMethod = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+nRep = 10000 # bootstrap replicates
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+```
+
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+prefixOut <- "SCTint"
+
+prefixRun_WGCNA = "wgcna3"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module_pres"
+colCellCluster = "cell_cluster_pres"
+
+```
+
+## load data
+
+Seurat object contains expression data and cell + patient-level metadata
+
+```{r}
+path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
+
+seuratObj <- load_obj(path_seuratObj)
+```
+
+Load modules dataframe
+
+```{r}
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz")
+head(dt_geneMod_perslab)
+```
+
+```{r}
+dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz")
+head(dt_geneMod_gerhard2018)
+```
+
+
+
+```{r}
+DefaultAssay(seuratObj) <- "SCT_combat"
+```
+
+```{r}
+seuratObj <- ScaleData(seuratObj, features = rownames(seuratObj))
+```
+
+```{r}
+mat_datExpr <- as.matrix(GetAssayData(object = seuratObj, assay = "SCT_combat", slot="scale.data"))
+rownames(mat_datExpr) <- rownames(seuratObj)
+mat_datExpr[0:4,0:4]
+```
+
+### compute module embeddings in sc data
+
+```{r}
+dt_geneMod_merged = rbindlist(list(dt_geneMod_gerhard2018, dt_geneMod_perslab))
+```
+
+
+<!-- ```{r} -->
+<!-- dt_geneMod_merged[[colModule]] %>% unique -> vec_mods -->
+
+<!-- vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0] -->
+
+<!-- list_vec_modgenes = lapply(vec_mods, function(mod) { -->
+<!--   condition = quote(dt_geneMod_merged[[colModule]]==mod) -->
+<!--   vec_mod_genes = dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]] %>% unique -->
+<!--   # filter out module genes absent in expression data -->
+<!--   vec_idxRow <- match(vec_mod_genes, rownames(mat_datExpr)) -->
+<!--   vec_mod_genes <- vec_mod_genes[!is.na(vec_idxRow)] -->
+<!--   return(vec_mod_genes) -->
+<!-- }) -->
+
+<!-- names(list_vec_modgenes) = vec_mods -->
+<!-- ``` -->
+
+```{r}
+dt_geneMod_merged[[colModule]] %>% unique -> vec_mods
+
+vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
+```
+
+```{r}
+mat_embed <- sapply(vec_mods, function(mod) {
+
+  # get gene weights
+  condition = quote(dt_geneMod_merged[[colModule]]==mod)
+  vec_pkMs <- dt_geneMod_merged[eval(condition), pkMs,]
+
+  # normalize module gene weights to sum to 1
+  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+
+  # find corresponding rows of the expression matrix
+  vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr))
+
+  # filter out mis-matches
+  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
+  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+
+  # compute weighted sum of normalized expression
+  mat_datExpr[vec_idxRow,] %>% as.matrix -> mat_sub
+  
+  if (nrow(mat_sub)==0) {
+    stop(paste0(mod, ": no module genes found in datExpr"))
+  } else if (nrow(mat_sub)>0 & nrow(mat_sub)<5) {
+    warning(paste0(mod, ": only ", nrow(mat_sub), " module genes detected"))
+  }
+  vec_pkMs %*% mat_sub
+
+})
+
+rownames(mat_embed) <- colnames(mat_datExpr)
+
+mat_embed[0:4,0:4]
+```
+
+scale embeddings 
+
+>>> not necessary, we just took weighted sum <<<
+
+<!-- ```{r} -->
+<!-- mat_embed_scaled = scale(mat_embed) -->
+<!-- ``` -->
+
+## write out files
+
+```{r}
+seuratObj <- AddMetaData(object=seuratObj, metadata = data.frame(row.names=rownames(mat_embed_scaled), mat_embed_scaled))
+```
+
+```{r}
+saveRDS(object = seuratObj, file = path_seuratObj, compress = "gzip")
+```
+
+
+
+

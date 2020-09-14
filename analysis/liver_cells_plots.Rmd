@@ -1,5 +1,5 @@
 ---
-title: 'Liver - gene network geneset tests'
+title: 'Liver - cell plots'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -88,39 +88,95 @@ prefixRun = "seurat_7"
 ## load data
 
 ```{r}
-seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj_combat.RDS.gz"))
+seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz"))
 ```
 
 ```{r}
-dt_markers <- openxlsx::read.xlsx(here("output","liver_perslab_align_seurat_7_SCTransformIntegrated_clustermarkers.xlsx"))
-head(dt_markers)
+#dt_geneMod_perslab = 
 ```
+
+```{r}
+# dt_markers <- openxlsx::read.xlsx(here("output","liver_perslab_align_seurat_7_SCTransformIntegrated_clustermarkers.xlsx"))
+# head(dt_markers)
+```
+
+```{r}
+Seurat::DefaultAssay(seuratObj) <-"SCT_combat"
+```
+
+get coarse cluster marker genes
+
+```{r}
+clusters = seuratObj@meta.data$cluster_perslab_coarse %>% table %>% names 
+
+Seurat::Idents(seuratObj) <-seuratObj@meta.data$cluster_perslab_coarse
+
+list_iterable = list("X"=clusters)
+fun = function(cluster) {tryCatch({
+  FindMarkers(seuratObj ,  
+          #cells.1=colnames(seurat_obj)[Idents(seurat_obj)==cluster],
+          #cells.2=NULL,
+          ident.1 = cluster,
+          only.pos = T,
+          #ident.2 = clusters[clusters!=cluster],
+          test.use  ="wilcox",
+          max.cells.per.ident=1000,
+          random.seed=randomSeed,
+          #latent.vars = if (!is.null(merge_specify) | !is.null(merge_group_IDs)) "sample_ID" else NULL,
+          verbose = T)
+          }, 
+          error = function(err) {
+            NA_character_
+            warning(paste0("findmarkers failed for ", cluster, " with error "))
+          })}
+
+list_markers=NULL
+list_markers <- lapply(FUN=fun, "X"=list_iterable[[1]])
+
+# add the gene and cluster as a column
+list_markers <- mapply(function(df_markers, cluster) {
+  if (!all(sapply(df_markers, is.na))) {
+    cbind("gene" = rownames(df_markers), "cluster"=rep(cluster, nrow(df_markers)), df_markers)
+  } else {
+    NA_character_
+  }
+},
+df_markers=list_markers, 
+cluster=clusters, SIMPLIFY=F)
+
+list_markers <- list_markers[!sapply(list_markers, function(markers) all(is.na(markers)))]
+df_markers <- Reduce(x=list_markers, f=rbind)
+rownames(df_markers) <- NULL
+
+saveMeta(savefnc=openxlsx::write.xlsx, x = df_markers, file=here("output", paste0(prefixData, "_", prefixRun, "coarse_clustermarkers_", flagDate,".xlsx")))
+
+```
+
+```{r}
+dt_markers = setDT(df_markers)
+```
+
 
 ## plotting
 
 ### dot plot
 
 ```{r}
-vec_clusters <- unique(seuratObj$cluster_perslab) 
-vec_clusters <- vec_clusters[order(as.numeric(gsub("-.*","",vec_clusters)))]
-```
 
-```{r}
-
-list_markers <- lapply(vec_clusters, function(clust){
-  clust_num <- gsub("-.*","",clust)
-  mycondition = quote(dt_markers$cluster==clust_num)
+list_markers <- lapply(clusters, function(clust){
+  #clust_num <- gsub("-.*","",clust)
+  mycondition = quote(dt_markers$cluster==clust)
   dt_markers[eval(mycondition),"gene"][1:10]
 })
-names(list_markers) <- unique(seuratObj$cluster_perslab)
+names(list_markers) <- clusters
 vec_markers <- unlist(list_markers, use.names = T)
-names(vec_markers) <- gsub("\\d+$","", names(vec_markers))
+names(vec_markers) <- gsub("\\.|gene\\d+$","", names(vec_markers))
 head(vec_markers)
 tail(vec_markers)
 ```
 
 ```{r}
-factor_cell_clust_group <- factor(vec_clusters, ordered = T)
+factor_cell_clust_group <- factor(clusters, ordered = T)
 ```
 
 ```{r}
@@ -140,7 +196,7 @@ p<-DotPlot_timshel(
   col.max = 2.5,
   dot.min = 0,
   dot.scale = 6,
-  group.by="cluster_perslab",
+  group.by="cluster_perslab_coarse",
   group.order=factor_cell_clust_group,
   plot.legend = T,
   do.return = T,
@@ -148,10 +204,10 @@ p<-DotPlot_timshel(
   coord_flip = F,
   df.marker.panel.to.plot=NULL#df
 )
-saveMeta(savefnc= ggsave, plot= p, filename = here("plots", paste0(prefixData, "_", prefixRun, "_SCT_combat_clust_markergene_dotplot.pdf")), width = 25, height=10)
+saveMeta(savefnc= ggsave, plot= p, filename = here("plots", paste0(prefixData, "_", prefixRun, "_SCT_combat_clust_coarse_markergene_dotplot",flagDate,".pdf")), width = 25, height=6)
 ```
 
-featureplots
+### feature plots
 
 ```{r}
 genes = c("TREM2")
@@ -161,3 +217,78 @@ genes = c("TREM2")
 Seurat::FeaturePlot(object=seuratObj, features="TREM2")
 ```
 
+```{r}
+vec_mods = c("aquamarine", "brown", "mediumaquamarine")
+```
+
+```{r}
+DefaultAssay(object = seuratObj) = "integrated"
+```
+
+```{r}
+p <- Seurat::FeaturePlot(object=seuratObj, features=vec_mods, blend = F, order = T)
+saveMeta(savefnc= ggsave, plot= p, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_mod_featplots_",flagDate,".pdf")), width = 12, height=12)
+```
+
+### violin plots
+
+```{r}
+vec_genes = c("VCAN")
+```
+
+```{r}
+DefaultAssay(seuratObj) = "SCT_combat"
+```
+
+```{r}
+#list_seuratObj[[1]]$macs_subclust <- factor(list_seuratObj[[1]]$macs_subclust, levels = 0:6, ordered=T)
+for (gene in vec_genes) {
+  p <- Seurat::VlnPlot(object = seuratObj, 
+                       features = vec_genes,
+                       assay = "SCT_combat", 
+                       slot = "data", 
+                       log=FALSE,
+                       sort = F, 
+                       group.by = "cluster_perslab")
+  
+  ggsave(plot = p, filename = here("plots", paste0(prefixData, "_",prefixRun, "_",gene,"_vlnplot_", params$date, ".pdf")), width = 12, height=9)
+}
+```
+
+## bar plot
+
+sc wgcna modules
+
+```{r}
+
+dt_geneMod_perslab_merged$module_pres %>% unique -> vec_mods_perslab
+
+vec_mods_perslab<- vec_mods_perslab[!is.na(vec_mods_perslab) & nchar(vec_mods_perslab)>0]
+
+mat_embed_perslab <- sapply(vec_mods_perslab, function(mod) {
+
+  # get gene weights
+  condition = quote(dt_geneMod_perslab_merged[[colModule]]==mod)
+  vec_pkMs <- dt_geneMod_perslab_merged[eval(condition), pkMs,]
+
+  # normalize module gene weights to sum to 1
+  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+
+  # find corresponding rows of the expression matrix
+  vec_idxRow <- match(dt_geneMod_perslab_merged[eval(condition), ..colGeneNames, ][[1]], dt_datExpr[,gene])
+
+  # filter out mis-matches
+  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
+  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+
+  # compute weighted sum of normalized expression
+  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
+
+  vec_pkMs %*% mat_sub
+
+})
+
+rownames(mat_embed_perslab) <- colnames(dt_datExpr)[-1]
+
+mat_embed_perslab[0:4,0:4]
+```

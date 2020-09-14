@@ -1,0 +1,280 @@
+---
+title: 'Liver - compare wgcna modules from aligning to ensembl gene_id or gene_name '
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# References:
+
+# Setup
+
+## Load packages
+
+```{r}
+library("data.table")
+library("Matrix")
+library("parallel")
+library("dplyr")
+library("ggplot2")
+library("magrittr")
+library("here")
+library("corrplot")
+library("RColorBrewer")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+```
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_gerhard2018"
+prefixRun = "1"
+prefixOut = "cf_wgcna3_vs_wgcna2"
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colModule = "module"
+colCellClust = "cell_cluster"
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+```
+
+## load data
+
+```{r}
+path_geneMod_gerhard2018_wgcna2 <- paste0(dirWGCNA_tables,"liver_gerhard2018_", "wgcna2","_geneMod_merged.csv.gz")
+dt_geneMod_gerhard2018_wgcna2 <-fread(file=path_geneMod_gerhard2018_wgcna2)
+head(dt_geneMod_gerhard2018_wgcna2)
+```
+
+```{r}
+path_geneMod_gerhard2018_wgcna3 <- paste0(dirWGCNA_tables,"liver_gerhard2018_", "wgcna3","_geneMod_merged_200325.csv.gz")
+dt_geneMod_gerhard2018_wgcna3 <-fread(file=path_geneMod_gerhard2018_wgcna3)
+head(dt_geneMod_gerhard2018_wgcna3)
+```
+
+```{r}
+dt_datExpr <- fread("/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz")
+```
+get gene weight vectors
+
+```{r}
+unique(dt_geneMod_gerhard2018_wgcna2[[colModule]]) %>% sort %>% na.omit %>% as.character -> modules_wgcna2
+modules_wgcna2 <- modules_wgcna2[nchar(modules_wgcna2)>0]
+```
+
+```{r}
+unique(dt_geneMod_gerhard2018_wgcna3[[colModule]]) %>% sort %>% na.omit %>% as.character -> modules_wgcna3
+modules_wgcna3 <- modules_wgcna3[nchar(modules_wgcna3)>0]
+```
+
+```{r}
+# wgcna 2
+fun <- function(module,dt_geneMod) {
+  dt_geneMod[[colGeneWeights]] %>% '['(dt_geneMod[[colModule]]==module) %>% na.omit %>% as.numeric -> geneWeights 
+  dt_geneMod[[colGeneNames]] %>% '['(dt_geneMod[[colModule]]==module) %>% na.omit  %>% as.character -> names(geneWeights) 
+  geneWeights <- geneWeights[nchar(names(geneWeights))>0]
+  return(geneWeights)
+}
+
+list_geneWeights_wgcna2 <- lapply(FUN = fun, X = modules_wgcna2, dt_geneMod = dt_geneMod_gerhard2018_wgcna2)
+list_geneWeights_wgcna3 <- lapply(FUN = fun, X = modules_wgcna3, dt_geneMod = dt_geneMod_gerhard2018_wgcna3)
+names(list_geneWeights_wgcna2) <- modules_wgcna2
+names(list_geneWeights_wgcna3) <- modules_wgcna3
+```
+
+### see if modules intersect
+```{r}
+ 
+fun = function(vec_geneWeights_wgcna2) {
+  sapply(list_geneWeights_wgcna3, function(vec_geneWeights_wgcna3) {
+    base::intersect(x=names(vec_geneWeights_wgcna2), y=names(vec_geneWeights_wgcna3)) %>% length %>% '/'(length(vec_geneWeights_wgcna3))
+  }, simplify=T)
+}
+  
+#list_iterable = list("X"=list_geneWeights)
+#mat_moduleGeneIntersect <- safeParallel(fun=fun,list_iterable=list_iterable, simplify = T)
+mat_moduleGeneIntersect <- sapply(FUN=fun,"X"=list_geneWeights_wgcna2, simplify = T)
+# set diagonal to zero
+mat_moduleGeneIntersect[col(mat_moduleGeneIntersect)==row(mat_moduleGeneIntersect)] <- 0
+
+dim(mat_moduleGeneIntersect)
+```
+
+plot intersect matrix
+
+```{r}
+
+pdf(file = paste0(dirWGCNA_plots, prefixData, "_", prefixOut,".intersect_mat.pdf"), 
+    width=max(20,ncol(mat_moduleGeneIntersect) %/% 3),
+    height=max(20,ncol(mat_moduleGeneIntersect) %/% 3))
+
+corrplot(corr = mat_moduleGeneIntersect, 
+         method = "color",
+         col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")), bias = 1)(200),
+         diag = F,
+         is.corr=F,
+         title="prop. of module wgcna3 intersecting module wgcna2",
+         order = "original",#hclust",
+         hclust.method = "average",
+         addCoef.col = "black",
+         tl.srt = 45,
+         number.digits = 2L,
+         number.cex = 0.5)
+
+invisible(dev.off())
+```
+
+## compute module correlations
+
+```{r}
+
+dt_geneMod_gerhard2018_wgcna2$module %>% unique -> vec_mods_wgcna2
+
+vec_mods_wgcna2<- vec_mods_wgcna2[!is.na(vec_mods_wgcna2) & nchar(vec_mods_wgcna2)>0]
+
+mat_embed_wgcna2 <- sapply(vec_mods_wgcna2, function(mod) {
+
+  # get gene weights
+  condition = quote(dt_geneMod_gerhard2018_wgcna2[[colModule]]==mod)
+  vec_pkMs <- dt_geneMod_gerhard2018_wgcna2[eval(condition), pkMs,]
+
+  # normalize module gene weights to sum to 1
+  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+
+  # find corresponding rows of the expression matrix
+  vec_idxRow <- match(dt_geneMod_gerhard2018_wgcna2[eval(condition), ..colGeneNames, ][[1]], dt_datExpr[,gene])
+
+  # filter out mis-matches
+  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
+  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+
+  # compute weighted sum of normalized expression
+  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
+
+  vec_pkMs %*% mat_sub
+
+})
+
+rownames(mat_embed_wgcna2) <- colnames(dt_datExpr)[-1]
+
+mat_embed_wgcna2[0:4,0:4]
+```
+
+```{r}
+dt_geneMod_gerhard2018_wgcna3$module %>% unique -> vec_mods_wgcna3
+
+vec_mods_wgcna3<- vec_mods_wgcna3[!is.na(vec_mods_wgcna3) & nchar(vec_mods_wgcna3)>0]
+
+mat_embed_wgcna3 <- sapply(vec_mods_wgcna3, function(mod) {
+
+  # get gene weights
+  condition = quote(dt_geneMod_gerhard2018_wgcna3[[colModule]]==mod)
+  vec_pkMs <- dt_geneMod_gerhard2018_wgcna3[eval(condition), pkMs,]
+
+  # normalize module gene weights to sum to 1
+  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+
+  # find corresponding rows of the expression matrix
+  vec_idxRow <- match(dt_geneMod_gerhard2018_wgcna3[eval(condition), ..colGeneNames, ][[1]], dt_datExpr[,gene])
+
+  # filter out mis-matches
+  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
+  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+
+  # compute weighted sum of normalized expression
+  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
+
+  vec_pkMs %*% mat_sub
+
+})
+
+rownames(mat_embed_wgcna3) <- colnames(dt_datExpr)[-1]
+
+mat_embed_wgcna3[0:4,0:4]
+```
+
+compute correlations between embeddings
+
+```{r}
+mat_cor_embed <- cor(x=mat_embed_wgcna3, y=mat_embed_wgcna2, method = "pearson")
+```
+
+plot correlation matrix
+
+```{r}
+
+pdf(file = paste0(dirWGCNA_plots, prefixData, "_", prefixOut,"_corrmat.pdf"), 
+    width=max(20,ncol(mat_cor_embed) %/% 3),
+    height=max(20,ncol(mat_cor_embed) %/% 3))
+
+corrplot(corr = mat_cor_embed, 
+         method = "color",
+         col = colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu")), bias = 1)(200),
+         diag = F,
+         is.corr=F,
+         title="correlation between wgcna3 and wgcna2 module embeddings",
+         order = "original",#hclust",
+         hclust.method = "average",
+         addCoef.col = "black",
+         tl.srt = 45,
+         number.digits = 2L,
+         number.cex = 0.5)
+
+invisible(dev.off())
+```
+
+

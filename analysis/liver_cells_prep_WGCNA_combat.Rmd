@@ -1,0 +1,540 @@
+---
+title: 'Liver - correct sample confounding in sc data before WGCNA'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+
+library("data.table")
+library("Matrix")
+library("Seurat")
+library("here")
+library("magrittr")
+library("sva")
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+```
+
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+prefixOut <- "SCTint"
+
+```
+
+## load data
+
+```{r}
+pathSeuratObj <- "/nfsdata/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz"
+  #dir(path=here("output"), pattern = paste0(".*",prefixRun, ".*\\.RDS\\.gz"), full.names = T)
+seuratObj <- load_obj(pathSeuratObj)
+```
+
+# Analysis 
+
+## Deconfound SCT normalized data for WGCNA 
+
+### Use ComBat on sample-wise SC-Transformed data
+
+References: 
+
+Parsana,...Leek_2019_Addressing confounding artifacts in reconstruction of gene co-expression networks
+https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1700-9
+vignette: https://static-content.springer.com/esm/art%3A10.1186%2Fs13059-019-1700-9/MediaObjects/13059_2019_1700_MOESM4_ESM.html
+
+R code from vignette source 'sva.Rnw'
+https://www.bioconductor.org/packages/release/bioc/vignettes/sva/inst/doc/sva.R
+
+7 Applying the ComBat function to adjust for
+known batches
+
+```{r}
+DefaultAssay(seuratObj) = "SCT" # this is the sample-wise SC-transformed data
+```
+
+The first step in using the sva package is to properly format the data and
+create appropriate model matrices. The data should be a matrix with features
+(genes, transcripts, voxels) in the rows and samples in the columns.
+
+```{r}
+mat_expr <- GetAssayData(seuratObj, slot="counts") %>% as.matrix 
+```
+
+<!-- The sva package assumes there are two types of variables that are being considered: -->
+<!-- (1) adjustment variables and (2) variables of interest. For example, in a gene -->
+<!-- expression study the variable of interest might an indicator of cancer versus -->
+<!-- control.  -->
+
+<!-- The adjustment variables could be the age of the patients, the sex of -->
+<!-- the patients, and a variable like the date the arrays were processed. -->
+
+<!-- Two model matrices must be made: the “full model” and the “null model”. -->
+<!-- The null model is a model matrix that includes terms for all of the adjustment -->
+<!-- variables but not the variables of interest. The full model includes terms for -->
+<!-- both the adjustment variables and the variables of interest. -->
+
+<!-- What variables should we include as adjustment variables?  -->
+<!-- *NB: With SCTransform we have already regressed out nUMI, percent.mt and CC.Difference* -->
+
+<!-- We want to adjust for confounders.  -->
+<!-- In addition to sample_ID, let's include Age and Sex since we don't want to be catching signatures related to these. -->
+
+<!-- BMI, Smoking and Alcohol_use likely cause changes in gene expression. However, those effects are directly involved in liver disease, so removing related variation would likely remove relevant variation. So let's not include those as adjustment variables. -->
+
+
+<!-- as for vars of interest  - not clear that we want to make a model with them here, as we actually don't want to do differential expression, but rather adjust the data for the adjustment variables and then find gene modules. -->
+
+<!-- Also, given the heterogeneity of single cell data, it is not possible to a-priori determine the 'biological' variables of interest. -->
+
+<!-- ```{r} -->
+<!-- vec_varsInterest <- c("lobular_inflammation_grade", "fibrosis_grade") -->
+<!-- ``` -->
+
+7 Applying the ComBat function to adjust for
+known batches
+
+Just as with sva, we then need to create a model matrix for the adjustment
+variables, including the variable of interest.
+
+But how can ComBat distinguish between variables to adjust for and those not to adjust for??
+
+# ```{r}
+# mat_modNull <- model.matrix(
+#   object = as.formula(paste0("~ ", paste0(vec_varsAdjust, collapse=" + "))), 
+#   data=seuratObj@meta.data[vec_varsAdjust])
+# ```
+
+# ```{r}
+# head(mat_modNull)
+# ```
+
+Filter out genes with very low variance across all cell types
+
+```{r}
+vec_logicalGoodGenes <- WGCNA::goodGenes(datExpr = t(mat_expr), minFraction = 0.01, verbose = T) 
+#   ..Excluding 8 genes from the calculation due to too many missing samples or zero variance.
+mat_expr <- mat_expr[vec_logicalGoodGenes,]
+```
+
+Use combat to correct the mean and variance in each sample 
+
+```{r}
+mat_expr_combat = sva::ComBat(dat=mat_expr, 
+                              batch = seuratObj$sample_ID,
+                              #mod=mat_modNull,
+                              mean.only=F)
+```
+
+```{r}
+mat_expr_combat[1:5,1:3]
+#               AAACCTGAGCGTGAAC_1 AAACCTGAGCTCCTCT_1 AAACGGGCATGCAATC_1
+# AL627309.1         -0.0002938149      -0.0002938149      -0.0002938149
+# AP006222.2         -0.0043340847      -0.0043340847      -0.0043340847
+# RP4-669L17.10       0.0005043494       0.0005043494       0.0005043494
+# RP11-206L10.3      -0.0006213485      -0.0006213485      -0.0006213485
+# RP11-206L10.2      -0.0004197211      -0.0004197211      -0.0004197211
+```
+
+## remove artificially introduced non-zero counts
+
+```{r}
+idx = mat_expr==0 & mat_expr_combat!=0 | mat_expr_combat<0
+```
+
+```{r}
+mat_expr_combat[idx] <- 0
+```
+
+```{r}
+mat_expr_combat[1:5,1:3]
+#               AAACCTGAGCGTGAAC_1 AAACCTGAGCTCCTCT_1 AAACGGGCATGCAATC_1
+# AL627309.1                     0                  0                  0
+# AP006222.2                     0                  0                  0
+# RP4-669L17.10                  0                  0                  0
+# RP11-206L10.3                  0                  0                  0
+# RP11-206L10.2                  0                  0                  0
+```
+
+# process data to plot it
+
+```{r}
+seuratObj[["SCT_combat"]] <- CreateAssayObject(counts = mat_expr_combat)
+```
+
+```{r}
+DefaultAssay(seuratObj) <- "SCT_combat"
+```
+
+## do standard dimensional reduction workflow to visualize effects of ComBat
+
+```{r}
+seuratObj <- FindVariableFeatures(seuratObj, assay = "SCT_combat")
+
+seuratObj <- ScaleData(object = seuratObj, 
+                              assay = "SCT_combat",
+                              min.cells.to.block = 25000)
+
+seuratObj<- RunPCA(seuratObj, 
+                    assay = "SCT_combat",
+                    npcs = npcs, 
+                    seed.use=randomSeed,
+                    verbose = FALSE)
+
+seuratObj <- RunUMAP(seuratObj,
+                            dims=1:npcs,
+                            reduction = "pca",
+                            assay=  "SCT_combat",
+                            seed.use = randomSeed)
+```
+
+### plot
+
+#### group by sample ID 
+
+pca 
+
+```{r}
+DimPlot(object = seuratObj, 
+        1:2, 
+        assay=  "SCT_combat",
+        reduction = "pca", 
+        group.by = "sample_ID",
+        label = F)
+```
+
+umap 
+
+```{r}
+
+p <- DimPlot(object = seuratObj, 
+        1:2, 
+        assay=  "SCT_combat",
+        reduction = "umap", 
+        group.by = "sample_ID",
+        label = F)
+
+saveMeta(savefnc=ggsave, plot =p, filename = here("plots", paste0(prefixData, "_", prefixRun, "_SCTint_perslab_labels_SCT_combat_UMAP_sampleID.pdf")), width=20, height=12)
+```
+
+umap, coloured by cell cluster as identified in integrated data
+
+```{r}
+p1 <- DimPlot(object = seuratObj, 
+        1:2, 
+        assay=  "SCT_combat",
+        reduction = "umap", 
+        group.by = "cluster_perslab_coarse",
+        label = T)
+saveMeta(savefnc=ggsave, plot =p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_SCTint_perslab_labels_SCT_combat_UMAP_cluster_perslab_coarse.pdf")), width=20, height=12)
+```
+
+#### compare to SCT all
+
+pca 
+
+```{r}
+DimPlot(object = seuratObj, 
+        1:2, 
+        reduction = "pca", 
+        assay = "SCTall",
+        group.by = "sample_ID",
+        label = F)
+```
+
+umap
+
+```{r}
+DimPlot(object = seuratObj, 
+        1:2, 
+        reduction = "umap", 
+        assay = "SCTall",
+        group.by = "sample_ID",
+        label = F)
+
+```
+
+Save ComBat corrected object
+
+```{r}
+saveMeta(savefnc = saveRDS, 
+         object =seuratObj, 
+         file = pathSeuratObj, 
+         compress="gzip")
+```
+
+```{r}
+dt_datExpr <- data.table("genes"=rownames(mat_expr_combat), mat_expr_combat)
+```
+
+also map to ensembl (for compatibility with e.g. Gerhard 2018)
+
+
+```{r}
+dt_datExpr_ensembl <- gene_map(dataIn = dt_datExpr, 
+                                 colGene = "genes", 
+                                 df_mapping = fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz"), 
+                                 from = "hgnc_symbol", 
+                                 to = "ensembl_gene_id", 
+                                 replace = T, 
+                                 na.rm = T)
+```
+
+```{r}
+dt_datExpr_ensembl[0:4,0:4]
+```
+
+```{r}
+dt_datExpr_ensembl$ensembl_gene_id %>% is.na %>% table
+# .
+# FALSE 
+# 17962
+```
+
+```{r}
+dt_datExpr_ensembl$ensembl_gene_id%>%duplicated%>%table
+# .
+# FALSE  TRUE 
+# 17961     1 
+```
+
+```{r}
+idx_dup <- dt_datExpr_ensembl$ensembl_gene_id%>%duplicated%>%which
+```
+
+```{r}
+dt_datExpr_ensembl$ensembl_gene_id[idx_dup]
+# [1] "ENSG00000259305"
+```
+
+```{r}
+sdcols <- colnames(dt_datExpr_ensembl)[-1]
+vec_tmp <- dt_datExpr_ensembl[ensembl_gene_id=="ENSG00000259305",lapply(.SD,mean),.SDcols=sdcols]
+```
+
+```{r}
+dt_datExpr_ensembl_mean <- dt_datExpr_ensembl[!idx_dup,]
+```
+
+```{r}
+dim(dt_datExpr_ensembl_mean)
+```
+
+```{r}
+dt_datExpr_ensembl_mean[ensembl_gene_id=="ENSG00000259305",2:21008] <- vec_tmp
+```
+
+```{r}
+dim(dt_datExpr)
+#[1] 24609 21008
+dim(dt_datExpr_ensembl)
+#[1] 17962 21008
+dim(dt_datExpr_ensembl_mean)
+#[1] 17961 21008
+```
+
+```{r}
+dt_datExpr_ensembl_mean[ensembl_gene_id=="ENSG00000259305",1:5]
+```
+
+## write out results
+
+```{r}
+fwrite(dt_datExpr, file = here("output",paste0(prefixData, "_", prefixRun, "_datExpr_combat.csv.gz")), compress = "gzip")
+```
+
+```{r}
+fwrite(dt_datExpr_ensembl_mean, file = here("output",paste0(prefixData, "_", prefixRun, "_datExpr_combat_ensembl.csv.gz")), compress = "gzip")
+```
+
+```{r}
+dt_metadata <- data.table("cell_id" = rownames(seuratObj@meta.data), seuratObj@meta.data)
+```
+
+```{r}
+fwrite(dt_metadata, file = here("data", paste0(prefixData, "_", prefixRun, "_metadata_full.csv.gz")), compress="gzip")
+```
+
+<!-- Alternative:  -->
+
+<!-- ## Use SCT normalization on all samples together and then linearly regress out sample effects -->
+
+<!-- Issues: this doesn't adjust variance. Also not very elegant to regress out univariate sample effects successively. -->
+
+<!-- ```{r} -->
+<!-- DefaultAssay(seuratObj) = "SCTall" -->
+<!-- ```  -->
+
+<!-- First, look at the principal components (on the SCTall assay) -->
+
+<!-- group by sample ID  -->
+
+<!-- ```{r} -->
+<!-- DimPlot(object = seuratObj,  -->
+<!--         1:2,  -->
+<!--         assay=  "SCTall", -->
+<!--         reduction = "pca",  -->
+<!--         group.by = "sample_ID", -->
+<!--         label = F) -->
+<!-- ``` -->
+
+<!-- group by conditions -->
+
+<!-- ```{r} -->
+
+<!-- DimPlot(object = seuratObj,  -->
+<!--         1:2,  -->
+<!--         assay=  "SCTall", -->
+<!--         reduction = "pca",  -->
+<!--         group.by = "fibrosis_grade", -->
+<!--         label = F) -->
+<!-- ``` -->
+
+<!-- group by sex  -->
+
+<!-- ```{r} -->
+
+<!-- DimPlot(object = seuratObj,  -->
+<!--         1:2,  -->
+<!--         reduction = "pca",  -->
+<!--         group.by = "Sex", -->
+<!--         label = F) -->
+<!-- ``` -->
+
+<!-- we need to regress out sample effects without removing condition effects -->
+
+<!-- ```{r} -->
+<!-- mat_mod <- model.matrix(object= ~sample_ID, data = data.frame("sample_ID"=seuratObj$sample_ID)) -->
+
+<!-- mat_mod[0:5,0:5] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- mat_mod <- mat_mod[,-1] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- df_mod <- data.frame(mat_mod, row.names=colnames(seuratObj)) -->
+<!-- ``` -->
+
+<!-- the model matrix contrasts with sample 235L as default -->
+
+<!-- ```{r} -->
+<!-- seuratObj <- AddMetaData(object = seuratObj, metadata =df_mod) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- seuratObj <- SCTransform(object = seuratObj,  -->
+<!--                          assay = "RNA",  -->
+<!--                          new.assay.name = "SCTall_regressBatch",  -->
+<!--                          vars.to.regress = c("percent.mito",   -->
+<!--                                              "CC.Difference",  -->
+<!--                                              colnames(df_mod)),  -->
+<!--                          # Variables to regress out in a second non-regularized linear regression. For example, percent.mito. Default is NULL -->
+<!--                          # For a categorial variable like sample_ID, this just corresponds to a mean, i.e. a location change. -->
+<!--                          # We are correcting with regard to a 'reference', sample235L -->
+<!--                         do.correct.umi=T, -->
+<!--                         do.scale=F, -->
+<!--                         do.center=T, -->
+<!--                         return.only.var.genes =F, -->
+<!--                         seed.use = randomSeed,#params$randomSeed, -->
+<!--                         verbose=T) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- seuratObj <- RunPCA(seuratObj,  -->
+<!--                     assay = "SCTall_regressBatch", -->
+<!--                     npcs = npcs,  -->
+<!--                     seed.use=randomSeed, -->
+<!--                     verbose = FALSE) -->
+<!-- ``` -->
+
+<!-- # check what the first PCs look like now.. -->
+
+<!-- ```{r} -->
+<!-- DimPlot(object = seuratObj,  -->
+<!--         1:2,  -->
+<!--         reduction = "pca",  -->
+<!--         assay = "SCTall_regressBatch", -->
+<!--         group.by = "sample_ID", -->
+<!--         label = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- DimPlot(object = seuratObj,  -->
+<!--         1:2,  -->
+<!--         reduction = "pca",  -->
+<!--         assay = "SCTall_regressBatch", -->
+<!--         group.by = "fibrosis_grade", -->
+<!--         label = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- DimPlot(object = seuratObj,  -->
+<!--         1:2,  -->
+<!--         reduction = "pca",  -->
+<!--         assay = "SCTall_regressBatch", -->
+<!--         group.by = "lobular_inflammation_grade", -->
+<!--         label = F) -->
+<!-- ``` -->
+
+<!-- hmm... TODO: examine different PCs, before and after regressing out, and compare.. -->
+
+
+

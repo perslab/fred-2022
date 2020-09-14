@@ -1,0 +1,142 @@
+---
+title: 'Liver - gene module renaming'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Set options
+
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        mc.cores=40 # for parallel computation
+        ) 
+```
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+pAdjMethod = "BH"
+pValThreshold = 0.05 #params$pValThreshold
+
+flagDate = substr(gsub("-","",as.character(Sys.Date())),3,1000)
+```
+
+## Load packages
+
+```{r}
+library("data.table")
+```
+
+## source utility functions
+
+```{r}
+source(here("perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set constants
+
+generic project constants 
+
+```{r}
+#prefixData <- "aizarani"
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+prefixRunWGCNA = "wgcna3"
+prefixOut <- "SCTint"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colModule = "module"
+colCellClust = "cell_cluster"
+```
+
+## load data
+
+load WGCNA gene module tables
+
+perslab 
+
+```{r}
+path_geneMod_perslab <- paste0(dirWGCNA_tables,prefixData, "_",prefixRun_WGCNA,"_geneMod_merged_200325.csv.gz")
+dt_geneMod_perslab <-fread(file=path_geneMod_perslab )
+dt_geneMod_perslab[0:3,]
+#                data    run   cell_cluster     module    genes        pkMs
+# 1: liver_perslab_int wgcna3 B-cells-mature lightblue3 KIAA1551 0.009426350
+# 2: liver_perslab_int wgcna3 B-cells-mature lightblue3     ZEB1 0.008230427
+# 3: liver_perslab_int wgcna3 B-cells-mature lightblue3    XYLT1 0.008185864
+```
+
+gerhard 2018
+
+```{r}
+path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz")
+dt_geneMod_gerhard2018 <-fread(file=path_geneMod_gerhard2018)
+dt_geneMod_gerhard2018[0:3,]
+#             data    run cell_cluster       module           genes       pkMs
+# 1: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000171848 0.03919702
+# 2: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000066279 0.03745749
+# 3: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000131747 0.03606625
+```
+
+
+```{r}
+
+dt_geneMod_perslab$module_renamed = dt_geneMod_perslab$module 
+
+for (cell_cluster in unique(dt_geneMod_perslab$cell_cluster)) {
+  vec_cell_cluster_mod = unique(dt_geneMod_perslab$module[dt_geneMod_perslab$cell_cluster==cell_cluster])
+  for (i in 1:length(vec_cell_cluster_mod))  {
+    dt_geneMod_perslab$module_renamed[dt_geneMod_perslab$module_renamed==vec_cell_cluster_mod[i]] = paste0(cell_cluster, "_", i)
+  }
+}
+
+```
+
+```{r}
+
+dt_geneMod_gerhard2018$module_renamed = dt_geneMod_gerhard2018$module 
+vec_mod = unique(dt_geneMod_gerhard2018$module)
+for (i in 1:length(vec_mod))  {
+  dt_geneMod_gerhard2018$module_renamed[dt_geneMod_gerhard2018$module_renamed==vec_mod[i]] = paste0("gerhard2018_", i)
+}
+
+```
+
+```{r}
+fwrite(dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/gerhard2018_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
+```
+
+```{r}
+fwrite(dt_geneMod_perslab, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
+```

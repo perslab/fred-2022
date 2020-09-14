@@ -56,12 +56,12 @@ flagDate = substr(gsub("-","",as.character(Sys.Date())),3,1000)
 
 library("data.table")
 library("dplyr")
-library("ggplot2")
 library("Matrix")
 library("parallel")
 library("here")
 library("WGCNA")
-library("corrplot")
+library("biomaRt")
+
 ```
 
 ## source utility functions
@@ -108,21 +108,21 @@ vec_celltypesOfInterest <- c("T-cells-alpha-beta",
 
 ## load data
 
-load gene module cell embedding matrix
+<!-- load gene module cell embedding matrix -->
 
-```{r}
-path_embed <-  paste0(dirWGCNA_tables, prefixData, "_",prefixRunWGCNA,"_kIM_cellModEmbed.csv.gz")
-dt_embed <- fread(path_embed)
-dt_embed[0:2,0:5]
-```
+<!-- ```{r} -->
+<!-- path_embed <-  paste0(dirWGCNA_tables, prefixData, "_",prefixRunWGCNA,"_kIM_cellModEmbed.csv.gz") -->
+<!-- dt_embed <- fread(path_embed) -->
+<!-- dt_embed[0:2,0:5] -->
+<!-- ``` -->
 
 load WGCNA gene module tables
 
 perslab 
 
 ```{r}
-path_geneMod <- paste0(dirWGCNA_tables,"liver_perslab_int_", prefixRunWGCNA,"_geneMod.csv.gz")
-dt_geneMod_perslab <-fread(file=path_geneMod)
+path_geneMod_perslab <- paste0(dirWGCNA_tables,"liver_perslab_int_", prefixRunWGCNA,"_geneMod.csv.gz")
+dt_geneMod_perslab <-fread(file=path_geneMod_perslab )
 dt_geneMod_perslab[0:3,]
 #                data    run   cell_cluster     module    genes        pkMs
 # 1: liver_perslab_int wgcna3 B-cells-mature lightblue3 KIAA1551 0.009426350
@@ -130,24 +130,24 @@ dt_geneMod_perslab[0:3,]
 # 3: liver_perslab_int wgcna3 B-cells-mature lightblue3    XYLT1 0.008185864
 ```
 
-moylan 2013
+<!-- moylan 2013 -->
 
-```{r}
-path_geneMod_moylan2013 <- paste0(dirWGCNA_tables,"liver_moylan2013_", "wgcna1","_geneMod.csv.gz")
-dt_geneMod_moylan2013 <-fread(file=path_geneMod_moylan2013)
-dt_geneMod_moylan2013[0:3,]
+<!-- ```{r} -->
+<!-- path_geneMod_moylan2013 <- paste0(dirWGCNA_tables,"liver_moylan2013_", "wgcna1","_geneMod.csv.gz") -->
+<!-- dt_geneMod_moylan2013 <-fread(file=path_geneMod_moylan2013) -->
+<!-- dt_geneMod_moylan2013[0:3,] -->
 
-#                data    run cell_cluster               module   genes      pkMs
-# 1: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow    ANO2 0.2370768 
-# 2: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow CNTNAP5 0.2365604 
-# 3: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow  TEDDM1 0.2353492 
+<!-- #                data    run cell_cluster               module   genes      pkMs -->
+<!-- # 1: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow    ANO2 0.2370768  -->
+<!-- # 2: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow CNTNAP5 0.2365604  -->
+<!-- # 3: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow  TEDDM1 0.2353492  -->
 
-```
+<!-- ``` -->
 
 gerhard 2013
 
 ```{r}
-path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_", "wgcna2","_geneMod.csv.gz")
+path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_", "wgcna3","_geneMod.csv.gz")
 dt_geneMod_gerhard2018 <-fread(file=path_geneMod_gerhard2018)
 dt_geneMod_gerhard2018[0:3,]
 #             data    run cell_cluster       module           genes       pkMs
@@ -156,82 +156,127 @@ dt_geneMod_gerhard2018[0:3,]
 # 3: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000131747 0.03606625
 ```
 
-load perslab cell metadata 
+<!-- load perslab cell metadata  -->
 
-```{r}
-dt_meta <- fread(here("data", paste0(prefixData, "_", prefixRun, "_metadata_full.csv.gz")))
-dt_meta[0:3,0:5]
-```
+<!-- ```{r} -->
+<!-- dt_meta <- fread(here("data", paste0(prefixData, "_", prefixRun, "_metadata_full.csv.gz"))) -->
+<!-- dt_meta[0:3,0:5] -->
+<!-- ``` -->
 
-load Moylan 2013 bulk data
+<!-- load Moylan 2013 bulk data -->
 
-```{r}
-dt_datExpr_moylan <- fread(here("data", "moylan2013.norm.expr.qc.csv.gz"))
-```
+<!-- ```{r} -->
+<!-- dt_datExpr_moylan <- fread(here("data", "moylan2013.norm.expr.qc.csv.gz")) -->
+<!-- ``` -->
 
 # Analysis / filtering 
 
-first map dt_geneMod genes to ensembl / hgnc
+<!-- first map dt_geneMod genes to ensembl / hgnc -->
 
-```{r}
-dt_geneMod_perslab$ensembl <- gene_map(dataIn = dt_geneMod$genes, 
-                               df_mapping = fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz"),
-                               from = "hgnc_symbol", 
-                               to = "ensembl_gene_id", 
-                               na.rm = F)
-```
+<!-- using biomart -->
+<!-- https://www.bioconductor.org/packages/devel/bioc/vignettes/biomaRt/inst/doc/biomaRt.html -->
 
-```{r}
-dt_geneMod_moylan2013$ensembl <- gene_map(dataIn = dt_geneMod_moylan2013$genes, 
-                               df_mapping = fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz"),
-                               from = "hgnc_symbol", 
-                               to = "ensembl_gene_id", 
-                               na.rm = F)
-```
+<!-- ```{r} -->
+<!-- ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl") -->
+<!-- ``` -->
 
-```{r}
-colnames(dt_geneMod_gerhard2018)[which(colnames(dt_geneMod_gerhard2018)=="genes")] <- "ensembl"
-```
+<!-- ```{r} -->
+<!-- grep("hgnc", listAttributes(ensembl)$name, value=T) -->
+<!-- #[1] "hgnc_id"         "hgnc_symbol"     "hgnc_trans_name" -->
+<!-- ``` -->
 
-```{r}
-dt_geneMod_gerhard2018$genes <- gene_map(dataIn = dt_geneMod_gerhard2018$ensembl, 
-                               df_mapping = fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz"),
-                               from = "ensembl_gene_id", 
-                               to = "hgnc_symbol", 
-                               na.rm = F)
-```
+<!-- ```{r} -->
+<!-- dt_mapping_biomart <- biomaRt::getBM(attributes = c('hgnc_symbol','ensembl_gene_id'), -->
+<!--                              filters = 'hgnc_symbol',  -->
+<!--                              values = dt_geneMod_perslab$genes,  -->
+<!--                              mart = ensembl) -->
+<!-- dt_mapping_biomart <- setDT(dt_mapping_biomart) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_mapping_perslab <- fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_perslab$ensembl_perslab <- gene_map(dataIn = dt_geneMod_perslab$genes,  -->
+<!--                                df_mapping = dt_mapping_perslab, -->
+<!--                                from = "hgnc_symbol",  -->
+<!--                                to = "ensembl_gene_id",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_perslab$ensembl_biomart <- gene_map(dataIn = dt_geneMod_perslab$genes,  -->
+<!--                                df_mapping = dt_mapping_biomart, -->
+<!--                                from = "hgnc_symbol",  -->
+<!--                                to = "ensembl_gene_id",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_moylan2013$ensembl <- gene_map(dataIn = dt_geneMod_moylan2013$genes,  -->
+<!--                                df_mapping = dt_mapping_perslab, -->
+<!--                                from = "hgnc_symbol",  -->
+<!--                                to = "ensembl_gene_id",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- colnames(dt_geneMod_gerhard2018)[which(colnames(dt_geneMod_gerhard2018)=="genes")] <- "ensembl" -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_gerhard2018$genes_perslab <- gene_map(dataIn = dt_geneMod_gerhard2018$ensembl,  -->
+<!--                                df_mapping = dt_mapping_perslab, -->
+<!--                                from = "ensembl_gene_id",  -->
+<!--                                to = "hgnc_symbol",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_gerhard2018$genes_biomart <- gene_map(dataIn = dt_geneMod_gerhard2018$ensembl,  -->
+<!--                                df_mapping = dt_mapping_biomart, -->
+<!--                                from = "ensembl_gene_id",  -->
+<!--                                to = "hgnc_symbol",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
 
 add new filter columns to dt_geneMod to retain cell clusters of interest
 
 ```{r}
 dt_geneMod_perslab[,cell_cluster_filter:=ifelse(cell_cluster %in% ..vec_celltypesOfInterest,cell_cluster,NA),]
-dt_geneMod_perslab[,module_filter:=ifelse(cell_cluster %in% ..vec_celltypesOfInterest,module,NA),]
+dt_geneMod_perslab[,module_filter:=ifelse(cell_cluster %in% ..vec_celltypesOfInterest,paste0("perslab_",module),NA),]
+dt_geneMod_perslab$module_filter 
 ```
 
-```{r}
-dt_geneMod_moylan2013[,cell_cluster_filter:=cell_cluster]
-dt_geneMod_moylan2013[,module_filter:=module]
-```
+<!-- ```{r} -->
+<!-- dt_geneMod_moylan2013[,cell_cluster_filter:=cell_cluster] -->
+<!-- dt_geneMod_moylan2013[,module_filter:=module] -->
+<!-- ``` -->
 
 ```{r}
 dt_geneMod_gerhard2018[,cell_cluster_filter:=cell_cluster]
-dt_geneMod_gerhard2018[,module_filter:=module]
+dt_geneMod_gerhard2018[,module_filter:=paste0("gerhard2018_",module)]
 ```
 
 ### combine geneMod data.tables into a single dt and write to disk
 
+
 ```{r}
-dt_geneMod_comb <- data.table::rbindlist(l = list(dt_geneMod_perslab,dt_geneMod_gerhard2018, dt_geneMod_moylan2013), use.names = T)
+# dt_geneMod_comb <- data.table::rbindlist(l = list(dt_geneMod_perslab,dt_geneMod_gerhard2018, dt_geneMod_moylan2013), use.names = T)
+dt_geneMod_comb <- data.table::rbindlist(l = list(dt_geneMod_perslab,dt_geneMod_gerhard2018), use.names = T)
 ```
 
 ```{r}
-fwrite(dt_geneMod_comb, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb.csv.gz")
+fwrite(dt_geneMod_comb, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb_200325.csv.gz")
 ```
 
 prune bulk RNAseq modules overlapping with any single cell modules
 
 ```{r}
-opt <- list(path_df_NWA ="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb.csv.gz",
+
+
+opt <- list(path_df_NWA ="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb_200325.csv.gz",
             colModule = "module_filter",
             colCellClust = "cell_cluster_filter",
             colGeneNames = "ensembl",
@@ -249,25 +294,42 @@ opt <- list(path_df_NWA ="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/li
             RAMGbMax = 250)
 ```
 
-# time Rscript /nfsdata/projects/jonatan/tools/wgcna-src/geneNetworkScripts/gene_module_merge2.R  --path_df_NWA /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb.csv.gz --colGeneNames ensembl --colModule module_filter --colCellClust cell_cluster_filter --colGeneWeights pkMs --cellClusters_keep 'c("T-cells-alpha-beta", "NK-like-cells", "Endothelial-cells", "T-cells-gamma-delta", "Macrophages", "Cholangiocytes", "Hepatocytes","Hepatic-stellate-cells", "Dendritic-cells", "Hepatic-stem-cells")' --minPropIntersect  0.7 --minWeightedCor  0.7 --minPropIntersect_iter_increase  1.01 --maxIter 25 --corMethod pearson --mergeOrPrune prune --dirOut /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut merge1 --doPlot  T --RAMGbMax 250
+# time Rscript /nfsdata/projects/jonatan/tools/wgcna-src/geneNetworkScripts/gene_module_merge2.R  --path_df_NWA /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb_200325.csv.gz --colGeneNames genes --colModule module_filter --colCellClust cell_cluster_filter --colGeneWeights pkMs --cellClusters_keep 'c("T-cells-alpha-beta", "NK-like-cells", "Endothelial-cells", "T-cells-gamma-delta", "Macrophages", "Cholangiocytes", "Hepatocytes","Hepatic-stellate-cells", "Dendritic-cells", "Hepatic-stem-cells")' --minPropIntersect  0.7 --minWeightedCor  0.7 --minPropIntersect_iter_increase  1.01 --maxIter 25 --corMethod pearson --mergeOrPrune prune --dirOut /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut merge2 --doPlot  T --RAMGbMax 250 &> ./log/log_liver_merge200325.txt
 
 re-load new geneMod table after pruning overlapping modules
 
 ```{r}
-dt_geneMod <-fread(file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb_merged.csv.gz")
+dt_geneMod_comb_merged <-fread(file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb_200325_merged.csv.gz")
 ```
 
 ```{r}
 colCellClust <- "cell_cluster_merged"
 colModule <- "module_merged"
-
-length(unique(dt_geneMod$module_filter)[nchar(unique(dt_geneMod$module_filter))>0])
-# [1] 220
-length(unique(dt_geneMod$module_merged)[nchar(unique(dt_geneMod$module_merged))>0])
-# [1] 209
 ```
 
-209 modules
+```{r}
+length(unique(dt_geneMod_comb_merged$module_filter)[nchar(unique(dt_geneMod_comb_merged$module_filter))>0])
+# [1] 206
+length(unique(dt_geneMod_comb_merged$module_merged)[nchar(unique(dt_geneMod_comb_merged$module_merged))>0])
+# [1] 193
+```
+
+193 modules
+
+Split up into separate geneMod tables
+
+
+```{r}
+dt_geneMod_perslab_merged <- dt_geneMod_comb_merged[data=="liver_perslab_int",]
+dt_geneMod_gerhard2018_merged <- dt_geneMod_comb_merged[data=="liver_gerhard2018",]
+# dt_geneMod_moylan2013_merged <- dt_geneMod_comb_merged[data=="liver_moylan2013",]
+```
+
+```{r}
+fwrite(dt_geneMod_perslab_merged, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
+fwrite(dt_geneMod_gerhard2018_merged, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
+#fwrite(dt_geneMod_moylan2013_merged, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/moylan2013_wgcna1_geneMod_merged.csv.gz", compress="gzip")
+```
 
 <!-- ## preservation analysis - Moylan2013 -->
 
@@ -277,23 +339,9 @@ length(unique(dt_geneMod$module_merged)[nchar(unique(dt_geneMod$module_merged))>
 
 ## preservation analysis
 
-
-
 ### single cell modules preservation in Gerhard2018
 
-```{r}
-# tmux l1
-opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb_merged.csv.gz",  
-           colGeneNames = "ensembl", 
-           colGeneWeights = "pkMs", 
-           colMod = "module_merged", 
-           colCellClust = "cell_cluster_merged", 
-           vec_pathsDatExpr = "c('perslab' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat_ensembl.csv.gz',
-           'gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/gerhard2018_norm.counts.csv.gz')", 
-           vec_pathsMetadata = "c('perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz', 
-           'gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/gerhard2018_patient_metadata_qc.csv.gz')", 
-           vec_metadataIdentCols = "c('perslab'='cluster_perslab_coarse', 'gerhard2018'='data')", 
-           list_list_vec_identLvlsMatch = 'list("Cholangiocytes"=list("gerhard2018"="gerhard2018"), 
+time Rscript /nfsdata/projects/jonatan/tools/wgcna-src/geneNetworkScripts/gene_module_preservation.R --path_dt_geneMod /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz --colGeneNames  genes --colGeneWeights  pkMs --colMod  module_merged --colCellClust  cell_cluster_merged --vec_pathsDatExpr  "c('perslab' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz', 'gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz')" --vec_pathsMetadata  "c('perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz', 'gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_patient_metadata_qc.csv.gz')"      --vec_metadataIdentCols  "c('perslab'='cluster_perslab_coarse', 'gerhard2018'='data')" --list_list_vec_identLvlsMatch  'list("Cholangiocytes"=list("gerhard2018"="gerhard2018"), 
            "Dendritic-cells"=list("gerhard2018"="gerhard2018"), 
            "Endothelial-cells"=list("gerhard2018"="gerhard2018"),    
            "Hepatic-stellate-cells"=list("gerhard2018"="gerhard2018"), 
@@ -302,196 +350,274 @@ opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/table
            "Macrophages"=list("gerhard2018"="gerhard2018"),
            "NK-like-cells"=list("gerhard2018"="gerhard2018"),     
            "T-cells-alpha-beta"=list("gerhard2018"="gerhard2018"),
-           "T-cells-gamma-delta"=list("gerhard2018"="gerhard2018"))', 
-           minCellClusterSize = 10, 
-           minpropModGenesInTestLvl = 0.5,
-           minPropModGenesNon0inTestLvl = 0.1,
-           dirOut = "/projects/jonatan/pub-perslab/18-liver-wgcna/", 
-           prefixOut = "liver_perslab_int_seurat_7_wgcna3", 
-           dirTmp = "/scratch/rkm916/tmp-wgcna/", 
-           networkType = 'c("signed hybrid")', 
-           corFnc = "cor", 
-           RAMGbMax = 300, 
-           path_runLog = NULL)
-```
+           "T-cells-gamma-delta"=list("gerhard2018"="gerhard2018"))' --minCellClusterSize  10 --minpropModGenesInTestLvl  0.5 --minPropModGenesNon0inTestLvl  0.1 --dirOut  /projects/jonatan/pub-perslab/18-liver-wgcna/  --prefixOut liver_perslab_int_wgcna3_vs_gerhard_200325 --dirTmp  /scratch/rkm916/tmp-wgcna/ --networkType  'c("signed hybrid")'  --corFnc  cor --RAMGbMax 300 &> log_200325_pres_wgcna3_vs_gerhard.txt
+
+<!-- ```{r} -->
+<!-- # tmux l1 -->
+<!-- opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz",   -->
+<!--            colGeneNames = "genes",  -->
+<!--            colGeneWeights = "pkMs",  -->
+<!--            colMod = "module_merged",  -->
+<!--            colCellClust = "cell_cluster_merged",  -->
+<!--            vec_pathsDatExpr = "c('perslab' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz', -->
+<!--            'gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz')",  -->
+<!--            vec_pathsMetadata = "c('perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz',  -->
+<!--            'gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_patient_metadata_qc.csv.gz')",  -->
+<!--            vec_metadataIdentCols = "c('perslab'='cluster_perslab_coarse', 'gerhard2018'='data')",  -->
+<!--            list_list_vec_identLvlsMatch = 'list("Cholangiocytes"=list("gerhard2018"="gerhard2018"),  -->
+<!--            "Dendritic-cells"=list("gerhard2018"="gerhard2018"),  -->
+<!--            "Endothelial-cells"=list("gerhard2018"="gerhard2018"),     -->
+<!--            "Hepatic-stellate-cells"=list("gerhard2018"="gerhard2018"),  -->
+<!--            "Hepatic-stem-cells"=list("gerhard2018"="gerhard2018"), -->
+<!--            "Hepatocytes"=list("gerhard2018"="gerhard2018"), -->
+<!--            "Macrophages"=list("gerhard2018"="gerhard2018"), -->
+<!--            "NK-like-cells"=list("gerhard2018"="gerhard2018"),      -->
+<!--            "T-cells-alpha-beta"=list("gerhard2018"="gerhard2018"), -->
+<!--            "T-cells-gamma-delta"=list("gerhard2018"="gerhard2018"))',  -->
+<!--            minCellClusterSize = 10,  -->
+<!--            minpropModGenesInTestLvl = 0.5, -->
+<!--            minPropModGenesNon0inTestLvl = 0.1, -->
+<!--            dirOut = "/projects/jonatan/pub-perslab/18-liver-wgcna/",  -->
+<!--            prefixOut = "liver_perslab_int_wgcna3_vs_gerhard_200325",  -->
+<!--            dirTmp = "/scratch/rkm916/tmp-wgcna/",  -->
+<!--            networkType = 'c("signed hybrid")',  -->
+<!--            corFnc = "cor",  -->
+<!--            RAMGbMax = 300,  -->
+<!--            path_runLog = NULL) -->
+<!-- ``` -->
+
+### Gerhard2018 modules preservation in single cell coarse clusters
+
+time Rscript /nfsdata/projects/jonatan/tools/wgcna-src/geneNetworkScripts/gene_module_preservation.R --path_dt_geneMod  /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz --colGeneNames  genes  --colGeneWeights  pkMs --colMod  module_merged --colCellClust  cell_cluster_merged --vec_pathsDatExpr  "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz', 'liver_perslab' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz')" --vec_pathsMetadata "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_patient_metadata_qc.csv.gz', 'liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz')" --vec_metadataIdentCols  "c('liver_gerhard2018'='data', 'liver_perslab'='cluster_perslab_coarse')" --list_list_vec_identLvlsMatch  'list("gerhard2018"=list("liver_perslab"=c("Cholangiocytes","Dendritic-cells","Endothelial-cells","Hepatic-stellate-cells","Hepatic-stem-cells", "Hepatocytes","Macrophages","NK-like-cells","T-cells-alpha-beta","T-cells-gamma-delta")))' --minCellClusterSize 10 --minpropModGenesInTestLvl  0.5 --minPropModGenesNon0inTestLvl  0.1 --dirOut  /projects/jonatan/pub-perslab/18-liver-wgcna/  --prefixOut  liver_gerhard2018_wgcna3_vs_cluster_perslab_coarse_200325  --dirTmp  /scratch/rkm916/tmp-wgcna/  --networkType  'c("signed hybrid")'  --corFnc cor --RAMGbMax   100 &> log_200325_pres_gerhard_perslab_coarse.txt
+
+<!-- ```{r} -->
+
+<!-- opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged.csv.gz",   -->
+<!--            colGeneNames = "genes",  -->
+<!--            colGeneWeights = "pkMs",  -->
+<!--            colMod = "module_merged",  -->
+<!--            colCellClust = "cell_cluster_merged",  -->
+<!--            vec_pathsDatExpr = "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz', -->
+<!--            'liver_perslab' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz')",  -->
+<!--            vec_pathsMetadata = "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_patient_metadata_qc.csv.gz', -->
+<!--            'liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz')",  -->
+<!--            vec_metadataIdentCols = "c('liver_gerhard2018'='data', 'liver_perslab'='cluster_perslab_coarse')",  -->
+<!--            list_list_vec_identLvlsMatch = 'list("liver_gerhard2018"=list("liver_perslab"=c("Cholangiocytes","Dendritic-cells","Endothelial-cells","Hepatic-stellate-cells","Hepatic-stem-cells", "Hepatocytes","Macrophages","NK-like-cells","T-cells-alpha-beta","T-cells-gamma-delta")))', -->
+<!--            minCellClusterSize = 10,  -->
+<!--            minpropModGenesInTestLvl = 0.5, -->
+<!--            minPropModGenesNon0inTestLvl = 0.1, -->
+<!--            dirOut = "/projects/jonatan/pub-perslab/18-liver-wgcna/",  -->
+<!--            prefixOut = "liver_gerhard2018_wgcna3_vs_cluster_perslab_coarse_200325",  -->
+<!--            dirTmp = "/scratch/rkm916/tmp-wgcna/",  -->
+<!--            networkType = 'c("signed hybrid")',  -->
+<!--            corFnc = "cor",  -->
+<!--            RAMGbMax = 300,  -->
+<!--            path_runLog = NULL) -->
+<!-- ``` -->
+
+### Gerhard2018 modules preservation in single cell fine clusters
+
+time Rscript /nfsdata/projects/jonatan/tools/wgcna-src/geneNetworkScripts/gene_module_preservation.R --path_dt_geneMod  /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz --colGeneNames  genes  --colGeneWeights  pkMs --colMod  module_merged  --colCellClust  cell_cluster_merged --vec_pathsDatExpr  "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz',
+           'liver_perslab' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz')" --vec_pathsMetadata  "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_patient_metadata_qc.csv.gz',
+           'liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz')" --vec_metadataIdentCols "c('liver_gerhard2018'='data', 'liver_perslab'='cluster_perslab')"  --list_list_vec_identLvlsMatch  'list("gerhard2018"=list("liver_perslab"=c("0-T-cells-alpha-beta", "4-T-cells-alpha-beta", "3-T-cells-gamma-delta", "5-Erythrocytes","1-NK-like-cells",           "8-Endothelial-cells","2-Endothelial-cells", "7-Macrophages", "9-Endothelial-cells", "18-Dendritic-cells","6-Macrophages", "12-Macrophages","13-Endothelial-cells",  "11-Hepatocytes",           
+"15-Macrophages", "10-Cholangiocytes","16-B-cells-mature",  "17-Plasma-cells",  "14-Hepatic-stellate-cells", "19-Hepatic-stem-cells")))' --minCellClusterSize  10  --minpropModGenesInTestLvl  0.5 --minPropModGenesNon0inTestLvl  0.1 --dirOut  /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut  liver_gerhard2018_wgcna3_vs_cluster_perslab_200325 --dirTmp  /scratch/rkm916/tmp-wgcna/ --networkType  'c("signed hybrid")' --corFnc  cor --RAMGbMax  100 &> log_200325_pres_gerhard_perslab_fine.txt
+
+<!-- ```{r} -->
+
+<!-- opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna2_geneMod_merged.csv.gz",   -->
+<!--            colGeneNames = "ensembl",  -->
+<!--            colGeneWeights = "pkMs",  -->
+<!--            colMod = "module_merged",  -->
+<!--            colCellClust = "cell_cluster_merged",  -->
+<!--            vec_pathsDatExpr = "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz', -->
+<!--            'liver_perslab' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz')",  -->
+<!--            vec_pathsMetadata = "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_patient_metadata_qc.csv.gz', -->
+<!--            'liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz')",  -->
+<!--            vec_metadataIdentCols = "c('liver_gerhard2018'='data', 'liver_perslab'='cluster_perslab')",  -->
+<!--            list_list_vec_identLvlsMatch = 'list("liver_gerhard2018"=list("liver_perslab"=c("0-T-cells-alpha-beta", "4-T-cells-alpha-beta", "3-T-cells-gamma-delta", "5-Erythrocytes","1-NK-like-cells",           "8-Endothelial-cells","2-Endothelial-cells", "7-Macrophages", "9-Endothelial-cells", "18-Dendritic-cells","6-Macrophages", "12-Macrophages","13-Endothelial-cells",  "11-Hepatocytes",            -->
+<!-- "15-Macrophages", "10-Cholangiocytes","16-B-cells-mature",  "17-Plasma-cells",  "14-Hepatic-stellate-cells", "19-Hepatic-stem-cells")))', -->
+<!--            minCellClusterSize = 10,  -->
+<!--            minpropModGenesInTestLvl = 0.5, -->
+<!--            minPropModGenesNon0inTestLvl = 0.1, -->
+<!--            dirOut = "/projects/jonatan/pub-perslab/18-liver-wgcna/",  -->
+<!--            prefixOut = "liver_gerhard2018_wgcna2_vs_cluster_perslab_1",  -->
+<!--            dirTmp = "/scratch/rkm916/tmp-wgcna/",  -->
+<!--            networkType = 'c("signed hybrid")',  -->
+<!--            corFnc = "cor",  -->
+<!--            RAMGbMax = 300,  -->
+<!--            path_runLog = NULL) -->
+<!-- ``` -->
+
+### perslab sc modules preservation in fine cluster_perslab
+
+time Rscript /nfsdata/projects/jonatan/tools/wgcna-src/geneNetworkScripts/gene_module_preservation.R --path_dt_geneMod  /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz --colGeneNames  genes --colGeneWeights  pkMs --colMod  module_merged --colCellClust  cell_cluster_merged --vec_pathsDatExpr  "c('liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz', 'liver_perslab_fine' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz')" --vec_pathsMetadata  "c('liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz','liver_perslab_fine'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz')" --vec_metadataIdentCols  "c('liver_perslab'='cluster_perslab_coarse', 'liver_perslab_fine'='cluster_perslab')" --minCellClusterSize 10 --minpropModGenesInTestLvl 0.5 --minPropModGenesNon0inTestLvl  0.1 --dirOut  /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut  liver_perslab_int_seurat_7_wgcna3_coarse_vs_fine_200325 --dirTmp  /scratch/rkm916/tmp-wgcna/ --networkType  'c("signed hybrid")' --corFnc  cor --RAMGbMax  100 &> log_200325_pres_perslab_coarse_vs_fine.txt
+
+<!-- ```{r} -->
+
+<!-- opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged.csv.gz",   -->
+<!--            colGeneNames = "ensembl",  -->
+<!--            colGeneWeights = "pkMs",  -->
+<!--            colMod = "module_merged",  -->
+<!--            colCellClust = "cell_cluster_merged",  -->
+<!--            vec_pathsDatExpr = "c('liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz', -->
+<!--            'liver_perslab_fine' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz')",  -->
+<!--            vec_pathsMetadata = "c('liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz','liver_perslab_fine'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz')",  -->
+<!--            vec_metadataIdentCols = "c('liver_perslab'='cluster_perslab_coarse', 'liver_perslab_fine'='cluster_perslab')",  -->
+<!--            list_list_vec_identLvlsMatch = NULL, # match all lvlRef vs all lvlTest -->
+<!--            minCellClusterSize = 10,  -->
+<!--            minpropModGenesInTestLvl = 0.5, -->
+<!--            minPropModGenesNon0inTestLvl = 0.1, -->
+<!--            dirOut = "/projects/jonatan/pub-perslab/18-liver-wgcna/",  -->
+<!--            prefixOut = "liver_perslab_int_seurat_7_wgcna3_coarse_vs_fine",  -->
+<!--            dirTmp = "/scratch/rkm916/tmp-wgcna/",  -->
+<!--            networkType = 'c("signed hybrid")',  -->
+<!--            corFnc = "cor",  -->
+<!--            RAMGbMax = 300,  -->
+<!--            path_runLog = NULL) -->
+<!-- ``` -->
+
+### perslab sc modules preservation in macrophage subclusters
+
+time Rscript /projects/jonatan/tools/wgcna-src/geneNetworkScripts/gene_module_preservation.R --path_dt_geneMod /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz --colGeneNames genes --colGeneWeights  pkMs --colMod module_assoc --colCellClust  cell_cluster_assoc --vec_pathsDatExpr  "c('liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz', 'liver_perslab_macs' ='/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat_macs.csv.gz')"  --vec_pathsMetadata  "c('liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz','liver_perslab_macs'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_macs.csv.gz')" --vec_metadataIdentCols "c('liver_perslab'='cluster_perslab_coarse', 'liver_perslab_macs'='macs_subclust')"  --list_list_vec_identLvlsMatch  NULL --minCellClusterSize  10 --minpropModGenesInTestLvl  0.5 --minPropModGenesNon0inTestLvl  0.1  --dirOut  /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut  liver_perslab_int_seurat_7_wgcna3_perslab_vs_macs --dirTmp  /scratch/rkm916/tmp-wgcna/ --networkType  'c("signed hybrid")' --corFnc  cor --RAMGbMax  300 &> log_200310_macs_perslab_mods_pres.txt
+
+<!-- ```{r} -->
+
+<!-- opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged.csv.gz",   -->
+<!--            colGeneNames = "genes",  -->
+<!--            colGeneWeights = "pkMs",  -->
+<!--            colMod = "module_assoc",  -->
+<!--            colCellClust = "cell_cluster_assoc",  -->
+<!--            vec_pathsDatExpr = "c('liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz', -->
+<!--            'liver_perslab_macs' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat_macs.csv.gz')",  -->
+<!--            vec_pathsMetadata = "c('liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz','liver_perslab_macs'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_macs.csv.gz')",  -->
+<!--            vec_metadataIdentCols = "c('liver_perslab'='cluster_perslab_coarse', 'liver_perslab_macs'='macs_subclust')",  -->
+<!--            list_list_vec_identLvlsMatch = NULL, # match all lvlRef vs all lvlTest -->
+<!--            minCellClusterSize = 10,  -->
+<!--            minpropModGenesInTestLvl = 0.5, -->
+<!--            minPropModGenesNon0inTestLvl = 0.1, -->
+<!--            dirOut = "/projects/jonatan/pub-perslab/18-liver-wgcna/",  -->
+<!--            prefixOut = "liver_perslab_int_seurat_7_wgcna3_perslab_vs_macs",  -->
+<!--            dirTmp = "/scratch/rkm916/tmp-wgcna/",  -->
+<!--            networkType = 'c("signed hybrid")',  -->
+<!--            corFnc = "cor",  -->
+<!--            RAMGbMax = 300,  -->
+<!--            path_runLog = NULL) -->
+<!-- ``` -->
 
 
-### Gerhard2018 modules preservation in single cell 
+### gerhard bulk modules preservation in perslab macrophage subclusters
 
+time Rscript /projects/jonatan/tools/wgcna-src/geneNetworkScripts/gene_module_preservation.R  --path_dt_geneMod  /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz --colGeneNames  genes --colGeneWeights  pkMs --colMod  module_merged --colCellClust  cell_cluster_merged --vec_pathsDatExpr  "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz', 'liver_perslab_macs' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat_macs.csv.gz')" --vec_pathsMetadata  "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_patient_metadata_qc.csv.gz','liver_perslab_macs'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_macs.csv.gz')" --vec_metadataIdentCols  "c('liver_gerhard2018'='data','liver_perslab_macs'='macs_subclust')"  --minCellClusterSize  10 --minpropModGenesInTestLvl  0.5 --minPropModGenesNon0inTestLvl  0.1 --dirOut /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut  liver_gerhard2018_wgcna3_vs_perslab_macs_subclust_200325 --dirTmp  /scratch/rkm916/tmp-wgcna/ --networkType  'c("signed hybrid")' --corFnc  cor --RAMGbMax  300 &> log_200325_pres_gerhard_mods_vs_macs.txt
+
+<!-- ```{r} -->
+<!-- opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged.csv.gz",   -->
+<!--            colGeneNames = "ensembl",  -->
+<!--            colGeneWeights = "pkMs",  -->
+<!--            colMod = "module_assoc",  -->
+<!--            colCellClust = "cell_cluster_assoc",  -->
+<!--            vec_pathsDatExpr = "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_norm.counts.csv.gz', -->
+<!--            'liver_perslab_macs' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat_macs.csv.gz')",  -->
+<!--            vec_pathsMetadata = "c('liver_gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_patient_metadata_qc.csv.gz', -->
+<!--            'liver_perslab_macs'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_macs.csv.gz')",  -->
+<!--            vec_metadataIdentCols = "c('liver_gerhard2018'='data','liver_perslab_macs'='macs_subclust')",  -->
+<!--            list_list_vec_identLvlsMatch = NULL, # match all lvlRef vs all lvlTest -->
+<!--            minCellClusterSize = 10,  -->
+<!--            minpropModGenesInTestLvl = 0.5, -->
+<!--            minPropModGenesNon0inTestLvl = 0.1, -->
+<!--            dirOut = "/projects/jonatan/pub-perslab/18-liver-wgcna/",  -->
+<!--            prefixOut = "liver_gerhard2018_wgcna2_vs_perslab_macs_subclust_1",  -->
+<!--            dirTmp = "/scratch/rkm916/tmp-wgcna/",  -->
+<!--            networkType = 'c("signed hybrid")',  -->
+<!--            corFnc = "cor",  -->
+<!--            RAMGbMax = 300,  -->
+<!--            path_runLog = NULL) -->
+<!-- ``` -->
+
+get perslab vs bulk presevation stats
 ```{r}
 
-opt = list(path_dt_geneMod = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_sc_bulk_geneMod_comb_merged.csv.gz",  
-           colGeneNames = "ensembl", 
-           colGeneWeights = "pkMs", 
-           colMod = "module_merged", 
-           colCellClust = "cell_cluster_merged", 
-           vec_pathsDatExpr = "c('gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/gerhard2018_norm.counts.csv.gz',
-           'liver_perslab' = '/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat_ensembl.csv.gz')", 
-           vec_pathsMetadata = "c('gerhard2018'='/projects/jonatan/pub-perslab/18-liver-fred/data/gerhard2018_patient_metadata_qc.csv.gz',
-           'liver_perslab'='/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_seurat_7_metadata_full.csv.gz')", 
-           vec_metadataIdentCols = "c('gerhard2018'='data', 'liver_perslab'='cluster_perslab_coarse')", 
-           list_list_vec_identLvlsMatch = 'list("gerhard2018"=list("liver_perslab"=c("Cholangiocytes","Dendritic-cells","Endothelial-cells","Hepatic-stellate-cells","Hepatic-stem-cells", "Hepatocytes","Macrophages","NK-like-cells","T-cells-alpha-beta","T-cells-gamma-delta")))',
-           minCellClusterSize = 10, 
-           minpropModGenesInTestLvl = 0.5,
-           minPropModGenesNon0inTestLvl = 0.1,
-           dirOut = "/projects/jonatan/pub-perslab/18-liver-wgcna/", 
-           prefixOut = "gerhard2018_wgcna2", 
-           dirTmp = "/scratch/rkm916/tmp-wgcna/", 
-           networkType = 'c("signed hybrid")', 
-           corFnc = "cor", 
-           RAMGbMax = 300, 
-           path_runLog = NULL)
-```
+path_dt_modPres_perslab_vs_gerhard <- paste0(dirWGCNA_tables, "liver_perslab_int_wgcna3_vs_gerhard_200325", "_df_preservationStats.csv")
 
-```{r}
-
-path_dt_modPres <- paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_", prefixRunWGCNA, "_df_preservationStats.csv")
-
-dt_modPres <- fread(path_dt_modPres)
+dt_modPres_perslab_vs_gerhard <- fread(path_dt_modPres_perslab_vs_gerhard)
 ```
 
 quickly inspect module preservation stats
 
 ```{r}
-table(dt_modPres$Z_stat>2)
+table(dt_modPres_perslab_vs_gerhard$Z_stat>2)
 ```
 
 ```{r}
-table(dt_modPres$log.p.Bonfsummary.pres<(log10(pValThreshold)))
+table(dt_modPres_perslab_vs_gerhard$log.p.Bonfsummary.pres<(log10(pValThreshold)))
 ```
 
 add column with -log10 BH corrected p-values
 
 ```{r}
-(1 - pnorm(dt_modPres$Z_stat)) %>% p.adjust(p=., method = pAdjMethod) -> vec_p.BH.pres
+(1 - pnorm(dt_modPres_perslab_vs_gerhard$Z_stat)) %>% p.adjust(p=., method = pAdjMethod) -> vec_p.BH.pres
 
-vec_p.BH.pres[vec_p.BH.pres==0] <- min(vec_p.BH.pres[vec_p.BH.pres>0])
+vec_p.BH.pres[vec_p.BH.pres==0] <- min(vec_p.BH.pres[vec_p.BH.pres>0])  # avoid zero p-values which become inf when taking log
 
 vec_min.log.p.BH.pres <- -log10(vec_p.BH.pres)
 
-dt_modPres[,min.log.p.BH.pres:=vec_min.log.p.BH.pres]
+dt_modPres_perslab_vs_gerhard[,min.log.p.BH.pres:=vec_min.log.p.BH.pres]
 ```
 
 ```{r}
-dt_geneMod$cell_cluster_pres <- dt_geneMod$cell_cluster_merged
-dt_geneMod$module_pres <- dt_geneMod$module_merged
+dt_geneMod_perslab_merged[["cell_cluster_pres"]] <- dt_geneMod_perslab_merged[["cell_cluster_merged"]]
+dt_geneMod_perslab_merged[["module_pres"]] <- dt_geneMod_perslab_merged[["module_merged"]]
 
-vec_mod = unique(dt_geneMod$module_pres[dt_geneMod$cell_cluster_pres %in% vec_celltypesOfInterest])
-# 182 modules
+vec_mod = unique(dt_geneMod_perslab_merged$module_pres[dt_geneMod_perslab_merged$cell_cluster_pres %in% vec_celltypesOfInterest])
+# 180 modules
 
 for (module in vec_mod){
-  vec_logical = dt_geneMod$module_pres == module
-  if (module %in% dt_modPres$module) {
-    if (dt_modPres$min.log.p.BH.pres[dt_modPres$module==module]<=-log10(pValThreshold)) {
-      dt_geneMod$cell_cluster_pres[vec_logical] <- dt_geneMod$module_pres[vec_logical] <- NA_character_
+  vec_logical = dt_geneMod_perslab_merged$module_pres == module
+  if (module %in% dt_modPres_perslab_vs_gerhard$module) {
+    if (dt_modPres_perslab_vs_gerhard$min.log.p.BH.pres[dt_modPres_perslab_vs_gerhard$module==module]<=-log10(pValThreshold)) {
+      dt_geneMod_perslab_merged$cell_cluster_pres[vec_logical] <- dt_geneMod_perslab_merged$module_pres[vec_logical] <- NA_character_
     } 
-  } else {print(paste0(module, " not in dt_modPres"))}
+  } else {
+    print(paste0(module, " not in dt_modPres_perslab_vs_gerhard"))
+    }
 }
 
-length(unique(dt_geneMod$module_pres))  
-#[1] 55
-```
-
-that leaves 41 modules + 14 from T-cells-alpha-beta for which modulePreservation failed (so they pass automatically)
-
-## correlate with previous sc modules (diagnostics)
-
-```{r}
-prefixRun_WGCNA_cf = "wgcna2"
 ```
 
 ```{r}
-dt_kMs <- fread(paste0(dirWGCNA_tables, prefixData,  "_", prefixRunWGCNA, "_kMs_full_join.csv.gz"))
-
-dt_kMs_cf <- fread(paste0(dirWGCNA_tables, prefixData,  "_", prefixRun_WGCNA_cf, "_kMs_full_join.csv.gz"))
+idx_mods = nchar(dt_geneMod_perslab_merged$module_pres)>0 & !is.na(dt_geneMod_perslab_merged$module_pres)
+unique(dt_geneMod_perslab_merged$module_pres[idx_mods])
 ```
 
 ```{r}
-vec_logical_col_kMs = colnames(dt_kMs) %in% unique(dt_geneMod$module_pres)
+length(unique(dt_geneMod_perslab_merged$module_pres[idx_mods]))
+# [1] [55]
 ```
+
+that leaves 55 preserved sc modules
+
+also add new 'pres' columns to bulk data (but don't filter)
 
 ```{r}
-vec_geneIntersect <- intersect(dt_kMs$genes, dt_kMs_wgcna2$genes)
+dt_geneMod_gerhard2018_merged[["cell_cluster_pres"]] <- dt_geneMod_gerhard2018_merged[["cell_cluster_merged"]]
+dt_geneMod_gerhard2018_merged[["module_pres"]] <- dt_geneMod_gerhard2018_merged[["module_merged"]]
 ```
 
-```{r}
+<!-- ```{r} -->
+<!-- dt_geneMod_moylan2013_merged[["cell_cluster_pres"]] <- dt_geneMod_moylan2013_merged[["cell_cluster_merged"]] -->
+<!-- dt_geneMod_moylan2013_merged[["module_pres"]] <- dt_geneMod_moylan2013_merged[["module_merged"]] -->
+<!-- ``` -->
 
-x= dt_kMs[match(vec_geneIntersect, genes),..vec_logical_col_x]
-y = dt_kMs_wgcna2[match(vec_geneIntersect, dt_kMs$genes),-1] 
-
-mat_cor <- cor(x = x, y=y, method = "pearson", use = "pairwise.complete.obs")
-```
-
-```{r, fig.height=16, fig.width = 16}
-col2 <- rev(colorRampPalette(c("#67001F", "#B2182B", "#D6604D","#F4A582","#FDDBC7", "#FFFFFF", "#D1E5F0", "#92C5DE","#4393C3", "#2166AC", "#053061"))(200))
-
-pdf(file = paste0(dirWGCNA_plots, prefixData,"_", prefixRunWGCNA, "_cf_cor_wgcna2_", params$date,".pdf"),width= 20, height=24)
-corrplot(corr = mat_cor, 
-         method = "color", 
-         type = "upper", 
-         is.corr = T,
-         col = col2,
-         tl.cex=0.7
-         #cex= 0.6
-         )
-# heatmap(x = mat_cor, 
-#         scale="none", 
-#         keep.dendro=F, 
-#        col =colorRampPalette(brewer.pal(n=9, name="RdYlBu"))(100))[1:60]
-dev.off()
-```
 
 # wrap up
 
-```{r}
-fwrite(dt_geneMod, file=path_geneMod, compress="gzip")
-```
-
-
-load pruned combined module table
+<!-- ```{r} -->
+<!-- fwrite(dt_geneMod_moylan2013_merged, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/moylan2013_wgcna1_geneMod_merged.csv.gz", compress="gzip") -->
+<!-- ``` -->
 
 ```{r}
-dt_geneMod_comb_pruned <- paste0(dirWGCNA_tables,"liver_sc_bulk_geneMod_comb_merged.csv.gz")
-dt_geneMod_comb_pruned <-fread(file=dt_geneMod_comb_pruned)
-dt_geneMod_comb_pruned[0:3,]
-#                data    run   cell_cluster     module    genes        pkMs
-# 1: liver_perslab_int wgcna3 B-cells-mature lightblue3 KIAA1551 0.009426350
-# 2: liver_perslab_int wgcna3 B-cells-mature lightblue3     ZEB1 0.008230427
-# 3: liver_perslab_int wgcna3 B-cells-mature lightblue3    XYLT1 0.008185864
-```
-
-were any bulk modules pruned? 
-
-```{r}
-any(is.na(dt_geneMod_comb_pruned[data %in% c("liver_moylan2013", "liver_gerhard2018"),module_merged]))
-any(nchar(dt_geneMod_comb_pruned[data %in% c("liver_moylan2013", "liver_gerhard2018"),module_merged])==0)
-```
-
-no!
-
-append bulk gene module tables to full sc gene module table (including all columns)
-
-```{r}
-dt_geneMod_bulk_pruned_full <- dt_geneMod_comb_pruned[data %in%c("liver_moylan2013", "liver_gerhard2018"),]
-
-dt_geneMod_bulk_pruned_full[,cell_cluster_filter:=cell_cluster]
-dt_geneMod_bulk_pruned_full[,module_filter:=module]
-dt_geneMod_bulk_pruned_full[,module_merged:=module]
-dt_geneMod_bulk_pruned_full[,cell_cluster_merged:=cell_cluster]
-dt_geneMod_bulk_pruned_full[,cell_cluster_pres:=cell_cluster]
-dt_geneMod_bulk_pruned_full[,module_pres:=module]
-
+fwrite(dt_geneMod_gerhard2018_merged, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/gerhard2018_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
 ```
 
 ```{r}
-dt_geneMod_comb_pruned_full <- data.table::rbindlist(list(dt_geneMod, dt_geneMod_bulk_pruned_full), use.names=T)
+fwrite(dt_geneMod_perslab_merged, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
 ```
-
-# wrap up
-
-```{r}
-path_geneMod_comb_sc_bulk <- paste0(dirWGCNA_tables,"liver_perslab_int_", prefixRunWGCNA,"_geneMod_comb_sc_bulk.csv.gz")
-fwrite(dt_geneMod_comb_pruned_full, file = path_geneMod_comb_sc_bulk, compress="gzip")
-```
-
-

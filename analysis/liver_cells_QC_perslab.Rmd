@@ -11,8 +11,6 @@ params:
   pValThreshold: !r 0.05
 ---
 
-See also previous script: ./liver_seurat.Rmd
-
 # Setup 
 
 ## options
@@ -175,13 +173,13 @@ saveMeta(savefnc = cowplot::save_plot, plot=p1,
 ## Filter on QC variables
 
 ```{r}
-seuratObjFilter <- Seurat::SubsetData(object = seuratObj, subsetname = "percent.mito", high.threshold= 0.2) 
+seuratObjFilter <- Seurat::SubsetData(object = seuratObj, subsetname = "percent.mito", high.threshold= 0.4) 
 seuratObj
 seuratObjFilter
 ```
 
 ```{r}
-seuratObjFilter <- Seurat::SubsetData(object = seuratObj, subsetname = "percent.ribo", high.threshold= 0.2) 
+seuratObjFilter <- Seurat::SubsetData(object = seuratObj, subsetname = "percent.ribo", high.threshold= 0.3) 
 seuratObj
 seuratObjFilter
 ```

@@ -1,5 +1,5 @@
 ---
-title: 'Liver - gene network metadata association analysis'
+title: 'Liver - gene network metadata association analysis in Moylan 2013 microarray data'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -29,23 +29,14 @@ params:
 ## Load packages
 
 ```{r}
-#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
-#library("Seurat")
-
 library("data.table")
 library("Matrix")
 library("parallel")
-#library("readr")
-library("tidyverse")
-#library("dplyr")
-#library("ggplot2")
+#library("tidyverse")
 library("here")
-#library("rlm")
-library("boot")
-#library("corrr")
-#library("lme4")
-#library("WGCNA")
-#devtools::install_github(repo = "satijalab/seurat", ref = "develop")
+#library("boot")
+library("magrittr")
+#library("AUCell")
 ```
 
 ## source utility functions

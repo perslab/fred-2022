@@ -1,0 +1,387 @@
+---
+title: 'Liver - analyse subsets of cells'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+this script
+* subsets the Seurat integrated single-cell data (Macrophages, hepatocytes, stellate cells, cholangiocytes..)
+* re-computes PCA and subcluster labels (make UMAP plots)
+* return silhouette of subcluster labellings
+* add new subcluster labellings to common metadata 
+
+# Setup
+
+## Load packages
+
+```{r}
+
+library("Seurat")
+library("data.table")
+library("Matrix")
+library("parallel")
+library("dplyr")
+library("ggplot2")
+library("here")
+library("cluster")
+library("parallelDist")
+
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+
+#options(datatable.WhenJisSymbolThenCallingScope=TRUE)
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+npcs=40
+res_primary = 0.3
+res_secondary = 0.5
+res_tertiary = 0.8
+
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+genesetLengthMin = 5
+genesetLengthMax = 1000
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+alpha =  0.25 # for GERR calling glmnet elasticnet, alpha \in [0,1], alpha==0 => ridge regression, alpha==1 => LASSO regression. Defaults to 0.5
+        # ?gerr::regression_selected_pathways
+```
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+#prefixOut <- "SCT"
+prefixOut <- "subset"
+
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module_assoc"
+colModule_gerhard2018 = "module"
+colCellCluster = "cell_cluster_assoc"
+colCellCluster_gerhard2018 = "cell_cluster"
+```
+
+## load seurat object with expression data
+
+```{r}
+#seuratObj_sub <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj_macroph.RDS.gz"))
+seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz"))
+```
+
+<!-- ## load metadata with -->
+
+<!-- ```{r} -->
+<!-- #dt_datExpr_combat <- fread(here("output", "liver_perslab_int_seurat_7_datExpr_combat_ensembl.csv.gz")) -->
+<!-- dt_metadata <- fread(here("data","liver_perslab_int_seurat_7_metadata_full.csv.gz")) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz") -->
+<!-- dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_gerhard2018$module <- paste0("gerhard2018_",dt_geneMod_gerhard2018$module) -->
+<!-- ``` -->
+
+## subset integrated data and run standard clustering workflow on integrated data
+
+```{r}
+Idents(seuratObj) <- seuratObj$cluster_perslab_coarse
+DefaultAssay(seuratObj) <- "integrated"
+```
+
+```{r}
+vec_celltype = c("Cholangiocytes", "Endothelial-cells", "Hepatic-stellate-cells", "Hepatocytes",  "Macrophages", "NK-like-cells", "T-cells-alpha-beta","T-cells-gamma-delta")
+
+list_seuratObj <- lapply(vec_celltype, function(id) subset(seuratObj, idents=id))
+
+names(list_seuratObj) <- vec_celltype
+```
+
+subset PCA, UMAP and clustering
+
+```{r}
+list_seuratObj <- lapply(list_seuratObj, function(seuratObj_sub){
+
+  # dimensional reduction and subclustering
+  seuratObj_sub <- Seurat::RunPCA(seuratObj_sub, 
+                                assay = "integrated",
+                                npcs = npcs, 
+                                seed.use=randomSeed,
+                                verbose = FALSE)
+ seuratObj_sub <- FindNeighbors(object = seuratObj_sub, dims= 1:npcs, verbose = T)
+ seuratObj_sub <- FindClusters(object = seuratObj_sub, verbose = T,resolution =res_primary, random.seed = randomSeed) 
+ seuratObj_sub <- RunUMAP(object=seuratObj_sub,  
+                               dims=1:npcs, 
+                               reduction = "pca",
+                               assay=  "integrated", 
+                               seed.use = randomSeed)
+ 
+ 
+})
+
+names(list_seuratObj) <- vec_celltype
+```
+
+add a second and third round of clustering
+
+```{r}
+list_seuratObj <- lapply(list_seuratObj, function(seuratObj_sub){
+  seuratObj_sub <- FindClusters(object = seuratObj_sub, verbose = T,resolution =res_secondary, random.seed = randomSeed) 
+  seuratObj_sub <- FindClusters(object = seuratObj_sub, verbose = T,resolution =res_tertiary, random.seed = randomSeed)
+})
+
+names(list_seuratObj) <- vec_celltype
+```
+
+subcluster UMAP plots
+colored by subcluster
+
+```{r}
+for (celltype in names(list_seuratObj)) {
+  
+  seuratObj_sub = list_seuratObj[[celltype]]
+  
+  # plot subclusters
+  p1 <-DimPlot(seuratObj_sub, 
+             reduction = 'umap', 
+             group.by = paste0(DefaultAssay(seuratObj_sub),'_snn_res.',res_secondary),
+             label = TRUE)
+  saveMeta(savefnc= ggsave, plot= p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", celltype,"_UMAP_clust",res_primary,".pdf")), width = 20, height=12)
+  
+  p1 <-DimPlot(seuratObj_sub, 
+           reduction = 'umap', 
+           group.by = paste0(DefaultAssay(seuratObj_sub),'_snn_res.',res_secondary),
+           label = TRUE)
+  saveMeta(savefnc= ggsave, plot= p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", celltype,"_UMAP_clust",res_secondary,".pdf")), width = 20, height=12)
+  p1 <-DimPlot(seuratObj_sub, 
+           reduction = 'umap', 
+           group.by = paste0(DefaultAssay(seuratObj_sub),'_snn_res.',res_tertiary),
+           label = TRUE)
+  saveMeta(savefnc= ggsave, plot= p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", celltype,"_UMAP_clust",res_tertiary,".pdf")), width = 20, height=12)
+
+}
+```
+
+```{r}
+for (celltype in names(list_seuratObj)) {
+  
+  seuratObj_sub = list_seuratObj[[celltype]]
+  
+  # plot subclusters
+  p1 <-DimPlot(seuratObj_sub, 
+             reduction = 'umap', 
+             group.by = "sample_ID",
+             label = FALSE,
+             pt.size=2)
+
+  saveMeta(savefnc= ggsave, plot= p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", celltype,"_UMAP_sample_ID.pdf")), width = 20, height=12)
+
+}
+```
+
+compute cluster silhouette
+
+```{r}
+cluster_res = c(0.5,0.5,0.3,0.3,0.3,0.3,0.5,0.5)
+names(cluster_res) = names(list_seuratObj)
+```
+
+```{r}
+
+list_seuratObj <- lapply(1:length(list_seuratObj), function(i) {
+  
+  
+  seuratObj_sub = list_seuratObj[[i]]
+  
+  DefaultAssay(seuratObj_sub) <- "integrated"
+   
+  d <- parDist(Embeddings(seuratObj_sub, reduction = "pca")[,1:npcs])
+  print(names(list_seuratObj)[i])
+  ident<-as.numeric(seuratObj_sub@meta.data[[paste0(DefaultAssay(seuratObj_sub),'_snn_res.',cluster_res[i])]])
+  
+  names(ident)<-names(Idents(seuratObj_sub))
+  
+  s2 <- silhouette(ident, d)
+  
+  # data.frame(cellscore=s2[,3], ident=as.character(ident)) %>%
+  #   group_by(ident) %>% summarise_at(vars(cellscore), list(~median(., na.rm=TRUE))) -> silscore
+  # 
+  data.frame(silscore=s2[,3], row.names = names(ident)) -> df_sillow
+  
+  colnames(df_sillow) = paste0(names(list_seuratObj)[i], "_subclust_silhouette")
+    
+  seuratObj_sub <- AddMetaData(object = seuratObj_sub, metadata = df_sillow)
+  
+  seuratObj_sub
+  
+})
+
+names(list_seuratObj) <- c("Cholangiocytes", "Endothelial-cells", "Hepatic-stellate-cells", "Hepatocytes","Macrophages","NK-like-cells","T-cells-alpha-beta","T-cells-gamma-delta")
+```
+
+get subcluster marker genes
+
+```{r}
+
+list_dt_markers_sub = list()
+
+for (i in 1:length(list_seuratObj)) {
+  
+  celltype= names(list_seuratObj)[i]
+  
+  seuratObj_sub = list_seuratObj[[celltype]]
+  
+  Seurat::DefaultAssay(seuratObj_sub) <-  "SCT_combat"
+  # get subcluster marker genes
+  clusters = seuratObj_sub@meta.data[[paste0("integrated_snn_res.", cluster_res[i])]] %>% table %>% names 
+  
+  Seurat::Idents(seuratObj_sub) <-seuratObj_sub@meta.data[[paste0("integrated_snn_res.", cluster_res[i])]]
+
+  list_iterable = list("X"=clusters)
+  fun = function(cluster) {tryCatch({
+    FindMarkers(seuratObj_sub ,  
+            #cells.1=colnames(seurat_obj)[Idents(seurat_obj)==cluster],
+            #cells.2=NULL,
+            ident.1 = cluster,
+            only.pos = T,
+            #ident.2 = clusters[clusters!=cluster],
+            test.use  ="wilcox",
+            max.cells.per.ident=1000,
+            random.seed=randomSeed,
+            #latent.vars = if (!is.null(merge_specify) | !is.null(merge_group_IDs)) "sample_ID" else NULL,
+            verbose = T)
+            }, 
+            error = function(err) {
+              NA_character_
+              warning(paste0("findmarkers failed for ", cluster, " with error "))
+            })}
+  
+    list_markers=NULL
+    list_markers <- lapply(FUN=fun, "X"=list_iterable[[1]])
+    
+    # add the gene and cluster as a column
+    list_markers <- mapply(function(df_markers, cluster) {
+      if (!all(sapply(df_markers, is.na))) {
+        cbind("gene" = rownames(df_markers), "cluster"=rep(cluster, nrow(df_markers)), df_markers)
+      } else {
+        NA_character_
+      }
+    },
+    df_markers=list_markers, 
+    cluster=names(table(Idents(seuratObj_sub))), SIMPLIFY=F)
+    
+    list_markers <- list_markers[!sapply(list_markers, function(markers) all(is.na(markers)))]
+    df_markers <- Reduce(x=list_markers, f=rbind)
+    rownames(df_markers) <- NULL
+    
+    dt_markers_tmp <- data.table("celltype"=celltype, df_markers) 
+    list_dt_markers_sub[[celltype]] <- dt_markers_tmp
+    # saveMeta(savefnc=openxlsx::write.xlsx, x = df_markers, file=here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", celltype, "_clustermarkers.xlsx")))
+    
+}
+
+dt_markers <- data.table::rbindlist(list_dt_markers_sub)
+```
+
+add subclustering labels and silhouette to full seuratObj
+
+```{r}
+for (i in 1:length(list_seuratObj)){
+  
+  celltype = names(list_seuratObj)[i]
+  seuratObj_sub = list_seuratObj[[celltype]]
+  idx = na.omit(match(colnames(seuratObj_sub), colnames(seuratObj)))
+  col_header <- paste0(celltype, "_subclust")
+  col_header_sil <- paste0(celltype, "_subclust_silhouette")
+  
+  vec_subclust <- rep(NA_character_, ncol(seuratObj))
+  vec_subclust_silhouette <- rep(NA_character_, ncol(seuratObj))
+  
+  vec_subclust[idx] <- seuratObj_sub@meta.data[[paste0(DefaultAssay(seuratObj_sub),"_snn_res.", cluster_res[i])]]
+  vec_subclust_silhouette[idx] <- seuratObj_sub@meta.data[[col_header_sil]]
+  
+  seuratObj <- AddMetaData(object=seuratObj, metadata = vec_subclust, col.name= col_header)
+  seuratObj <- AddMetaData(object=seuratObj, metadata = vec_subclust_silhouette, col.name = col_header_sil)
+}
+```
+
+# write out results 
+
+marker genes
+
+```{r}
+openxlsx::write.xlsx(x=dt_markers, file = here("output",paste0(prefixData, "_",prefixRun,  "_subclust_markergenes.xlsx")))
+```
+
+seurat object
+
+```{r}
+saveRDS(seuratObj, here("output",paste0(prefixData, "_",prefixRun,  "_SCTint_perslab_labels_seuratObj.RDS.gz")), compress="gzip")
+```
+

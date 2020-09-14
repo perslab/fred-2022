@@ -1,0 +1,902 @@
+---
+title: 'Liver - analyse subsets of cells'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+>>> REVISE <<<
+this script
+* subsets the Seurat integrated single-cell data (Macrophages, hepatocytes, stellate cells, cholangiocytes..)
+* re-computes PCA and subcluster labels (make UMAP plots)
+* return silhouette of subcluster labellings
+* add new subcluster labellings to common metadata 
+
+# Setup
+
+## Load packages
+
+```{r}
+
+library("Seurat")
+library("data.table")
+library("Matrix")
+library("parallel")
+library("dplyr")
+library("ggplot2")
+library("here")
+# library("cluster")
+# library("parallelDist")
+library("gerr")
+library("GO.db")
+library("gage") # provides GO genesets
+```
+
+## source utility functions
+
+```{r}
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+```
+
+## Set options
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+
+#options(datatable.WhenJisSymbolThenCallingScope=TRUE)
+```
+
+## Set constants
+
+```{r}
+randomSeed = 12345
+set.seed(randomSeed)
+
+npcs=40
+res_primary = 0.3
+res_secondary = 0.5
+res_tertiary = 0.8
+
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+genesetLengthMin = 5
+genesetLengthMax = 1000
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+alpha =  0.25 # for GERR calling glmnet elasticnet, alpha \in [0,1], alpha==0 => ridge regression, alpha==1 => LASSO regression. Defaults to 0.5
+        # ?gerr::regression_selected_pathways
+```
+
+generic project constants 
+
+```{r}
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+#prefixOut <- "SCT"
+prefixOut <- "subset"
+
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module_assoc"
+colModule_gerhard2018 = "module"
+colCellCluster = "cell_cluster_assoc"
+colCellCluster_gerhard2018 = "cell_cluster"
+```
+
+```{r}
+celltype <- "Macrophages"
+```
+
+## load seurat objects with expression and meta-data
+
+```{r}
+#seuratObj_sub <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj_macroph.RDS.gz"))
+seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz"))
+```
+
+```{r}
+seuratObj_macParland <- readRDS(here("data", "macparland_seurat_obj3.RDS.gz"))
+```
+
+all perslab single-cell genes (as background for enrichment tests)
+```{r}
+vec_allGenes <- readRDS(here("data","liver_perslab_int_genesBackground.RDS"))
+```
+
+gene modules 
+
+```{r}
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz")
+head(dt_geneMod_perslab)
+```
+
+bulk data
+
+```{r}
+dt_datExpr_gerhard <- fread(here("data", "liver_gerhard2018_norm.counts.csv.gz"))
+```
+
+```{r}
+dt_metadata_gerhard <- fread(here("data", "liver_gerhard2018_patient_metadata_qc.csv.gz"))
+```
+
+```{r}
+dt_mod_embeddings_gerhard <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mod_embed_gerhard2018.csv.gz")
+```
+
+
+## compare macrophage subcluster 2 in perslab and in MacParland
+
+### process MacParland
+
+```{r}
+seuratObj_macParland <- SCTransform(object = seuratObj_macParland,  
+                                    vars.to.regress = c("percent.mito"),
+                                    seed.use = randomSeed) 
+```
+
+# subset the perslab macrophages
+
+```{r}
+seuratObj_sub <- subset(seuratObj, subset=cluster_perslab_coarse == celltype)
+```
+
+
+```{r}
+vec_genesPlot = c("S100A8","S100A9","S100A12") # top genes in "honeydew3" macrophage module
+```
+
+```{r}
+p1 <- VlnPlot(object = seuratObj, features = vec_genesPlot,  group.by = "cluster_perslab")
+ggsave(plot=p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_calgranulin_vlnplots_perslab_cluster_perslab.pdf")))
+```
+
+```{r}
+p2 <- VlnPlot(object = seuratObj_macParland, features = vec_genesPlot,  group.by = "Cluster_annot")
+ggsave(plot=p2, filename = here("plots", paste0(prefixData, "_", prefixRun, "_calgranulin_vlnplots_macparland_Cluster_annot.pdf")))
+```
+
+### look at gerhard2018_coral across all perslab 
+
+```{r}
+p_perslab_gerhard2018_mods <- VlnPlot(object = seuratObj, features = grep("^gerhard2018_", colnames(seuratObj@meta.data), value=T),  group.by = "cluster_perslab")
+ggsave(plot=p_perslab_gerhard2018_mods, filename = here("plots", paste0(prefixData, "_", prefixRun, "_gerhard_mods_vlnplot_perslab_cluster_perslab.pdf")), height=40, width=40)
+```
+
+
+Note the differences in proprocessing: 
+
+* MacParland et al: SCT with regress out mito
+* Perslab: SCT with regress out mito and CC difference %>% ComBat %>% preserve zeros
+
+Dot plots
+
+```{r}
+DotPlot_timshel(object = seuratObj_macParland, 
+                assay = "SCT", 
+                slot = "counts", 
+                do.scale = F, 
+                genes.plot = vec_genesPlot, 
+                cols.use = c("orangered", "blue"), 
+                col.min = "blue", col.max = "orangered",  
+                group.by = "Cluster_annot", 
+                coord_flip = T,
+                x.lab.rot = T)
+```
+
+
+The expression level is a bit confusing. Better stick with the violin jitter plots
+
+Now to Gerhard
+
+```{r}
+condition = quote(dt_datExpr_gerhard$gene %in% vec_genesPlot)
+mat_plot = dt_datExpr_gerhard[eval(condition),-1] %>% t
+colnames(mat_plot) = dt_datExpr_gerhard$gene[dt_datExpr_gerhard$gene %in% vec_genesPlot]
+dt_plot <- data.table(mat_plot)
+dt_plot$run_accession = rownames(mat_plot)
+```
+
+```{r}
+dt_plot$Diagnosis <- dt_metadata_gerhard$Diagnosis[match(dt_plot$run_accession, dt_metadata_gerhard$run_accession)]
+```
+
+### inflammation
+
+```{r}
+dt_plot_inflam_sub <- dt_plot[Diagnosis %in% c("Lob Inflam 1", "Lob Inflam 2", "NORMAL") ]
+dt_plot_inflam_sub[,plot_color:=ifelse(Diagnosis == "Lob Inflam 2", "red", ifelse(Diagnosis == "Lob Inflam 1", "orange", "blue"))]
+```
+
+```{r}
+p3 <- ggplot(data = dt_plot_inflam_sub, aes(x=S100A8, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p3, filename = here("plots", paste0(prefixData, "_", prefixRun, "_S100A8_gerhard_inflam_histo.pdf")))
+```
+
+```{r}
+p4 <- ggplot(data = dt_plot_inflam_sub, aes(x=S100A9, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p4, filename = here("plots", paste0(prefixData, "_", prefixRun, "_S100A9_gerhard_inflam_histo.pdf")))
+
+```
+
+```{r}
+p5 <- ggplot(data = dt_plot_inflam_sub, aes(x=S100A12, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p5, filename = here("plots", paste0(prefixData, "_", prefixRun, "_S100A12_gerhard_inflam_histo.pdf")))
+
+```
+
+It seems the three calgranulin genes differ only in a few inflamed patients
+
+
+### fibrosis
+
+```{r}
+dt_plot_fibr_sub <- dt_plot[grepl("Fibrosis|NORMAL", Diagnosis)]
+#dt_plot_fibr_sub[,plot_color:=ifelse(Diagnosis == "Fibrosis4", "red", ifelse(Diagnosis == "Lob Inflam 1", "orange", "blue"))]
+```
+
+```{r}
+p6 <- ggplot(data = dt_plot_fibr_sub, aes(x=S100A8, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p6, filename = here("plots", paste0(prefixData, "_", prefixRun, "_S100A8_gerhard_fibrosis_histo.pdf")))
+```
+
+```{r}
+p7 <- ggplot(data = dt_plot_fibr_sub, aes(x=S100A9, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p7, filename = here("plots", paste0(prefixData, "_", prefixRun, "_S100A9_gerhard_fibrosis_histo.pdf")))
+
+```
+
+```{r}
+p8 <- ggplot(data = dt_plot_fibr_sub, aes(x=S100A12, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p8, filename = here("plots", paste0(prefixData, "_", prefixRun, "_S100A12_gerhard_fibrosis_histo.pdf")))
+
+```
+
+There is even less of a pattern in fibrosis
+
+### Look at the whole honeydew3 module
+
+```{r}
+dt_plot_honeydew3 <- dt_mod_embeddings_gerhard[,.(run_accession,perslab_honeydew3)]
+dt_plot_honeydew3$Diagnosis <- dt_metadata_gerhard$Diagnosis[match(dt_plot_honeydew3$run_accession, dt_metadata_gerhard$run_accession)]
+```
+
+#### lob inflam 
+
+```{r}
+dt_plot_honeydew3_inflam_sub <- dt_plot_honeydew3[Diagnosis %in% c("Lob Inflam 1", "Lob Inflam 2", "NORMAL") ]
+```
+
+
+```{r}
+p9 <- ggplot(data = dt_plot_honeydew3_inflam_sub, aes(x=perslab_honeydew3, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p9, filename = here("plots", paste0(prefixData, "_", prefixRun, "_honeydew3_gerhard_inflam_histo.pdf")))
+```
+
+#### fibrosis
+
+
+```{r}
+dt_plot_honeydew3_fibr_sub <- dt_plot_honeydew3[grepl("Fibrosis|NORMAL", Diagnosis)]
+#dt_plot_fibr_sub[,plot_color:=ifelse(Diagnosis == "Fibrosis4", "red", ifelse(Diagnosis == "Lob Inflam 1", "orange", "blue"))]
+```
+
+```{r}
+p10 <- ggplot(data = dt_plot_honeydew3_fibr_sub, aes(x=perslab_honeydew3, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p10, filename = here("plots", paste0(prefixData, "_", prefixRun, "_honeydew3_gerhard_fibrosis_histo.pdf")))
+```
+
+### moccasin
+
+```{r}
+dt_plot_moccasin <- dt_mod_embeddings_gerhard[,.(run_accession,gerhard2018_moccasin)]
+dt_plot_moccasin$Diagnosis <- dt_metadata_gerhard$Diagnosis[match(dt_plot_moccasin$run_accession, dt_metadata_gerhard$run_accession)]
+```
+
+#### lob inflam 
+
+```{r}
+dt_plot_moccasin_inflam_sub <- dt_plot_moccasin[Diagnosis %in% c("Lob Inflam 1", "Lob Inflam 2", "NORMAL") ]
+```
+
+
+```{r}
+p11 <- ggplot(data = dt_plot_moccasin_inflam_sub, aes(x=gerhard2018_moccasin, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p11, filename = here("plots", paste0(prefixData, "_", prefixRun, "_moccasin_gerhard_inflam_histo.pdf")))
+```
+
+#### fibrosis
+
+
+```{r}
+dt_plot_moccasin_fibr_sub <- dt_plot_moccasin[grepl("Fibrosis|NORMAL", Diagnosis)]
+#dt_plot_fibr_sub[,plot_color:=ifelse(Diagnosis == "Fibrosis4", "red", ifelse(Diagnosis == "Lob Inflam 1", "orange", "blue"))]
+```
+
+```{r}
+p12 <- ggplot(data = dt_plot_moccasin_fibr_sub, aes(x=gerhard2018_moccasin, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.4)
+ggsave(plot=p12, filename = here("plots", paste0(prefixData, "_", prefixRun, "_moccasin_gerhard_fibrosis_histo.pdf")))
+```
+
+
+
+### perslab_darkgoldenrod2 (hepatocytes)
+
+```{r}
+dt_plot_darkgoldenrod2 <- dt_mod_embeddings_gerhard[,.(run_accession,perslab_darkgoldenrod2)]
+dt_plot_darkgoldenrod2$Diagnosis <- dt_metadata_gerhard$Diagnosis[match(dt_plot_darkgoldenrod2$run_accession, dt_metadata_gerhard$run_accession)]
+```
+
+#### lob inflam 
+
+```{r}
+dt_plot_darkgoldenrod2_inflam_sub <- dt_plot_darkgoldenrod2[Diagnosis %in% c("Lob Inflam 1", "Lob Inflam 2", "NORMAL") ]
+```
+
+
+```{r}
+p11 <- ggplot(data = dt_plot_darkgoldenrod2_inflam_sub, aes(x=perslab_darkgoldenrod2, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p11, filename = here("plots", paste0(prefixData, "_", prefixRun, "_darkgoldenrod2_gerhard_inflam_histo.pdf")))
+```
+
+#### fibrosis
+
+
+```{r}
+dt_plot_darkgoldenrod2_fibr_sub <- dt_plot_darkgoldenrod2[grepl("Fibrosis|NORMAL", Diagnosis)]
+#dt_plot_fibr_sub[,plot_color:=ifelse(Diagnosis == "Fibrosis4", "red", ifelse(Diagnosis == "Lob Inflam 1", "orange", "blue"))]
+```
+
+```{r}
+p12 <- ggplot(data = dt_plot_darkgoldenrod2_fibr_sub, aes(x=perslab_darkgoldenrod2, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.4)
+ggsave(plot=p12, filename = here("plots", paste0(prefixData, "_", prefixRun, "_darkgoldenrod2_gerhard_fibrosis_histo.pdf")))
+```
+
+
+### perslab_paleturquoise (hepatocytes)
+
+```{r}
+dt_plot_paleturquoise <- dt_mod_embeddings_gerhard[,.(run_accession,perslab_paleturquoise)]
+dt_plot_paleturquoise$Diagnosis <- dt_metadata_gerhard$Diagnosis[match(dt_plot_paleturquoise$run_accession, dt_metadata_gerhard$run_accession)]
+```
+
+#### lob inflam 
+
+```{r}
+dt_plot_paleturquoise_inflam_sub <- dt_plot_paleturquoise[Diagnosis %in% c("Lob Inflam 1", "Lob Inflam 2", "NORMAL") ]
+```
+
+
+```{r}
+p11 <- ggplot(data = dt_plot_paleturquoise_inflam_sub, aes(x=perslab_paleturquoise, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.5)
+ggsave(plot=p11, filename = here("plots", paste0(prefixData, "_", prefixRun, "_paleturquoise_gerhard_inflam_histo.pdf")))
+```
+
+#### fibrosis
+
+
+```{r}
+dt_plot_paleturquoise_fibr_sub <- dt_plot_paleturquoise[grepl("Fibrosis|NORMAL", Diagnosis)]
+#dt_plot_fibr_sub[,plot_color:=ifelse(Diagnosis == "Fibrosis4", "red", ifelse(Diagnosis == "Lob Inflam 1", "orange", "blue"))]
+```
+
+```{r}
+p12 <- ggplot(data = dt_plot_paleturquoise_fibr_sub, aes(x=perslab_paleturquoise, fill=Diagnosis)) + geom_histogram(bins=50, alpha = 0.4)
+ggsave(plot=p12, filename = here("plots", paste0(prefixData, "_", prefixRun, "_paleturquoise_gerhard_fibrosis_histo.pdf")))
+```
+
+<!-- ```{r} -->
+<!-- dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz") -->
+<!-- dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_gerhard2018$module <- paste0("gerhard2018_",dt_geneMod_gerhard2018$module) -->
+<!-- ``` -->
+
+### GERR gene set enrichment on subcluster DE ('marker') genes
+
+```{r}
+dt_markers <- openxlsx::read.xlsx(xlsxFile=here("output", paste0(prefixData, "_", prefixRun, "_", "subclust_markergenes.xlsx"))) %>% setDT 
+```
+
+```{r}
+dt_markers <- dt_markers[celltype=="Macrophages"]
+```
+
+```{r}
+list_vec_DEgenes <- lapply(unique(dt_markers$cluster), function(clust) {
+  #vecOut <- -log10(dt_markers$p_val[dt_markers$cluster==clust])
+  #names(vecOut) <- dt_markers$gene[dt_markers$cluster==clust]
+  #vecOut <- sort(vecOut, decreasing = T)
+  
+  vec_out <- dt_markers$gene[dt_markers$cluster==clust]
+  vec_out[1:(as.integer(length(vec_out)))]
+  #vecOut
+})
+names(list_vec_DEgenes)<-unique(dt_markers$cluster)
+
+```
+
+#### Gene Ontology
+
+download gene ontology genesets
+
+```{r}
+#data(bods)
+#list_list_vec_genesetsGO <- bods(species = "human", pkg.name=NULL, id.type = "eg")
+list_list_vec_genesetsGO <- go.gsets(species = "human", pkg.name=NULL, id.type = "eg")
+
+list_vec_genesetsGO <- list_list_vec_genesetsGO[[1]]
+```
+
+filter out very large or small genesets
+
+```{r}
+list_vec_genesetsGO %>% sapply(., length) %>% summary
+   # Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+   #  1.0     2.0     6.0    98.8    24.0 19659.0
+```
+
+```{r}
+list_vec_genesetsGO <- list_vec_genesetsGO[sapply(list_vec_genesetsGO, length) >= genesetLengthMin & sapply(list_vec_genesetsGO, length) <= genesetLengthMax]
+
+length(list_vec_genesetsGO)
+# [1] 12044
+```
+
+map the GO genesets from Entrez Gene to symbol
+
+https://www.rdocumentation.org/packages/gage/versions/2.22.0/topics/egSymb
+https://www.rdocumentation.org/packages/gage/versions/2.22.0/topics/eg2sym
+
+```{r}
+data(egSymb)
+
+list_vec_genesetsGO <- lapply(list_vec_genesetsGO, function(vec_geneset) {
+  vec_geneset <- eg2sym(eg=vec_geneset)
+  vec_geneset[!is.na(vec_geneset)]
+})
+```
+
+To get GO definitions we use GO.db package
+
+```{r}
+dt_GO = as.data.table(GO.db::GOTERM)
+```
+
+```{r}
+gene_pathway_matrixGO = sapply(list_vec_genesetsGO, function(vec_geneset) {
+  (vec_allGenes %in% vec_geneset) %>% as.numeric
+}, simplify = T)
+
+rownames(gene_pathway_matrixGO) <- vec_allGenes
+  
+dim(gene_pathway_matrixGO)
+#[1] 36116  12044
+```
+
+convert to sparse matrix format 
+
+```{r}
+gene_pathway_matrixGO %>% as(., "sparseMatrix") -> gene_pathway_matrixGO
+```
+
+run regularised regression gene test 
+
+```{r gaussianFit}
+list_gaussResGO <- lapply(list_vec_DEgenes, function(vec_DEGenes) {
+  regression_selected_pathways(gene_input=vec_DEGenes, 
+                               gene_pathway_matrix = gene_pathway_matrixGO,
+                               family="gaussian",
+                               alpha=alpha)})
+```
+
+### gather the GO results in a data.table
+
+```{r}
+vec_clust <- rep(names(list_gaussResGO), sapply(list_gaussResGO, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
+```
+
+```{r}
+vec_coef = lapply(list_gaussResGO, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
+```
+
+```{r}
+vec_p.value_fisher = lapply(list_gaussResGO, function(x) x[["selected_pathways_fisher_pvalue"]])  %>% unlist(use.names = F)
+```
+
+```{r}
+vec_GOid <- lapply(list_gaussResGO, function(x) x[["selected_pathways_names"]] 
+                     %>%  names 
+                     %>% substr(.,start=1, stop = 10))  %>% unlist(use.names = F)
+```
+
+```{r}
+lapply(list_gaussResGO, function(x) {
+  x[["selected_pathways_names"]] %>% names %>% substr(., start=12, stop=1000)
+  })  %>% unlist(use.names = F) -> vec_GOterm
+```
+
+```{r}
+
+sapply(vec_GOid, function(id) {
+  dt_GO$Definition[dt_GO$go_id == id] %>% unique
+}) %>% unlist(use.names = F) -> vec_GOdef 
+
+```
+
+```{r}
+
+sapply(vec_GOid, function(id) {
+  dt_GO$Ontology[dt_GO$go_id == id] %>% unique
+}) %>% unlist(use.names = F) -> vec_ontology
+
+```
+
+```{r}
+dt_resultsGO <- data.table(
+  cluster = vec_clust,
+  coef = vec_coef,
+  p.value_fisher = vec_p.value_fisher,
+  GO_id = vec_GOid,
+  GO_term = vec_GOterm,
+  GO_definition  = vec_GOdef,
+  GO_ontology = vec_ontology
+  )
+```
+
+KEGG analysis
+
+Download KEGG genesets
+
+```{r}
+data(kegg.gs)
+length(kegg.gs)
+# [1] 177
+# Hm it says 186 on the msigdb page http://software.broadinstitute.org/gsea/msigdb/genesets.jsp?collection=CP:KEGG
+
+list_vec_genesetsKEGG = kegg.gs; rm(kegg.gs)
+```
+
+map the KEGG genesets from Entrez Gene to symbol
+
+https://www.rdocumentation.org/packages/gage/versions/2.22.0/topics/egSymb
+https://www.rdocumentation.org/packages/gage/versions/2.22.0/topics/eg2sym
+
+```{r}
+data(egSymb)
+
+list_vec_genesetsKEGG <- lapply(list_vec_genesetsKEGG, function(vec_geneset) {
+  vec_geneset <- eg2sym(eg=vec_geneset)
+  vec_geneset[!is.na(vec_geneset)]
+})
+```
+
+```{r}
+gene_pathway_matrixKEGG = sapply(list_vec_genesetsKEGG, function(vec_geneset) {
+  (vec_allGenes %in% vec_geneset) %>% as.numeric
+}, simplify = T)
+
+rownames(gene_pathway_matrixKEGG) <- vec_allGenes
+  
+dim(gene_pathway_matrixKEGG)
+# [1] 3000  177
+```
+
+convert to sparse matrix format 
+
+```{r}
+gene_pathway_matrixKEGG %>% as(., "sparseMatrix") -> gene_pathway_matrixKEGG
+```
+
+run regularised regression gene test 
+
+```{r gaussianFit}
+list_gaussResKEGG <- lapply(list_vec_DEgenes, function(vec_DEGenes) {
+  regression_selected_pathways(gene_input=vec_DEGenes, 
+                               gene_pathway_matrix = gene_pathway_matrixKEGG,
+                               family="gaussian",
+                               alpha=alpha)})
+```
+
+### gather the KEGG results in a data.table
+
+```{r}
+vec_clust <- rep(names(list_gaussResKEGG), sapply(list_gaussResKEGG, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
+```
+
+```{r}
+vec_coef = lapply(list_gaussResKEGG, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
+```
+
+```{r}
+vec_p.value_fisher = lapply(list_gaussResKEGG, function(x) x[["selected_pathways_fisher_pvalue"]])  %>% unlist(use.names = F)
+```
+
+```{r}
+vec_KEGGid <- lapply(list_gaussResKEGG, function(x) x[["selected_pathways_names"]] 
+                     %>%  names 
+                     %>% substr(.,start=1, stop = 8))  %>% unlist(use.names = F)
+```
+
+```{r}
+lapply(list_gaussResKEGG, function(x) {
+  x[["selected_pathways_names"]] %>% names %>% substr(.,start=10,stop=10000)
+  })  %>% unlist(use.names = F) -> vec_KEGGterm
+```
+
+<!-- ```{r} -->
+
+<!-- sapply(vec_KEGGid, function(id) { -->
+<!--   dt_KEGG$Definition[dt_GO$go_id == id] %>% unique -->
+<!-- }) %>% unlist(use.names = F) -> vec_GOdef -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- sapply(vec_GOid, function(id) { -->
+<!--   dt_GO$Ontology[dt_GO$go_id == id] %>% unique -->
+<!-- }) %>% unlist(use.names = F) -> vec_ontology -->
+
+<!-- ``` -->
+
+```{r}
+dt_resultsKEGG <- data.table(
+  cluster = vec_clust,
+  coef = vec_coef,
+  p.value_fisher = vec_p.value_fisher,
+  KEGG_id = vec_KEGGid,
+  KEGG_term = vec_KEGGterm
+  )
+```
+
+### Examine module expression within celltype
+
+<!-- ```{r} -->
+<!-- list_seuratObj[[celltype]] %>% GetAssayData(object=., assay="SCT_combat") %>% as.data.table  -> dt_datExpr_celltype -->
+
+<!-- dt_datExpr_celltype <- data.table("gene" = rownames(list_seuratObj[[celltype]]), dt_datExpr_celltype) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- mat_datExpr_celltype <- as.matrix(dt_datExpr_celltype[,-1]) -->
+<!-- rownames(mat_datExpr_celltype) <- dt_datExpr_celltype[["gene"]] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- vec_mods_perslab = unique(dt_geneMod_perslab[[colModule]]) -->
+<!-- vec_mods_perslab <- vec_mods_perslab[nchar(vec_mods_perslab)>0] -->
+<!-- ``` -->
+
+<!-- use **all** Gerhard modules - not only the ones associated with inflammation or fibrosis -->
+
+<!-- ```{r} -->
+<!-- vec_mods_gerhard2018 <- unique(dt_geneMod_gerhard2018[[colModule_gerhard2018]]) -->
+<!-- vec_mods_gerhard2018 <- vec_mods_gerhard2018[nchar(vec_mods_gerhard2018)>0] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- list_mat_embed_perslab <- lapply(vec_mods_perslab, function(module) { -->
+<!--   vec_geneWeights <- dt_geneMod_perslab[[colGeneWeights]][dt_geneMod_perslab[[colModule]]==module] -->
+<!--   names(vec_geneWeights) <- dt_geneMod_perslab[[colGeneNames]][dt_geneMod_perslab[[colModule]]==module] -->
+<!--   vec_geneWeights <- vec_geneWeights/sum(vec_geneWeights) # normalise gene Weights -->
+<!--   vec_geneWeights <- vec_geneWeights/sum(vec_geneWeights) # normalise gene Weights -->
+<!--   vec_genes_intersect = intersect(names(vec_geneWeights),rownames(mat_datExpr_celltype)) -->
+<!--   mat_out <- t(as.matrix(vec_geneWeights[vec_genes_intersect])) %*% mat_datExpr_celltype[vec_genes_intersect,] -->
+<!--   return(mat_out) -->
+<!-- }) -->
+<!-- list_mat_embed_perslab %>% Reduce(x=., f = rbind) %>% t -> mat_embed_perslab -->
+<!-- colnames(mat_embed_perslab) <- vec_mods_perslab -->
+
+<!-- mat_embed_perslab[0:4,0:4] -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- list_mat_embed_gerhard2018<- lapply(vec_mods_gerhard2018, function(module) { -->
+<!--   vec_geneWeights <- dt_geneMod_gerhard2018[[colGeneWeights]][dt_geneMod_gerhard2018[[colModule_gerhard2018]]==module] -->
+<!--   names(vec_geneWeights) <- dt_geneMod_gerhard2018[[colGeneNames]][dt_geneMod_gerhard2018[[colModule_gerhard2018]]==module] -->
+<!--   vec_geneWeights <- vec_geneWeights/sum(vec_geneWeights) # normalise gene Weights -->
+<!--   vec_genes_intersect = intersect(names(vec_geneWeights),rownames(mat_datExpr_celltype)) -->
+<!--   mat_out <- t(as.matrix(vec_geneWeights[vec_genes_intersect])) %*% mat_datExpr_celltype[vec_genes_intersect,] -->
+<!--   return(mat_out) -->
+<!-- }) -->
+<!-- list_mat_embed_gerhard2018 %>% Reduce(x=., f = rbind) %>% t -> mat_embed_gerhard2018 -->
+<!-- colnames(mat_embed_gerhard2018) <- vec_mods_gerhard2018 -->
+
+<!-- mat_embed_gerhard2018[0:4,0:4] -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- mat_embed = cbind(mat_embed_gerhard2018, mat_embed_perslab) -->
+<!-- ``` -->
+
+<!-- ### add module embeddings to celltype metadata -->
+
+<!-- ```{r} -->
+<!-- condition = quote(!is.na(dt_metadata[[paste0(celltype,"_subclust")]])) -->
+<!-- dt_metadata_celltype <- dt_metadata[eval(condition)] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_metadata_celltype <- data.table(dt_metadata_celltype, mat_embed) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_embed <- data.table("cell_id"=rownames(mat_embed),  -->
+<!--                        dt_metadata_celltype[[paste0(celltype,"_subclust")]],  -->
+<!--                        mat_embed) -->
+<!-- colnames(dt_embed)[2] <- paste0(celltype,"_subclust") -->
+<!-- ``` -->
+
+<!-- ## compute celltype subcluster median embeddings -->
+
+<!-- ```{r} -->
+<!-- # /!\ -->
+<!-- # NB: here we must manually type in the variable.. -->
+<!-- colnames(dt_embed) <- gsub("-","_",colnames(dt_embed)) -->
+<!-- dt_embed_clustMedian <- dt_embed[, lapply(.SD, median),  -->
+<!--                                  by = .(Endothelial_cells_subclust),  -->
+<!--                                  .SDcols = c(vec_mods_gerhard2018,vec_mods_perslab) ] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_embed_clustMedian_melted <- melt.data.table(data = dt_embed_clustMedian, id.vars=paste0(gsub("-","_",celltype),"_subclust"),  variable.name = "module", value.name = "median_embedding") -->
+<!-- ``` -->
+
+<!-- ## add mod embeddings to seurat object metadata as well  -->
+
+<!-- ```{r} -->
+<!-- list_seuratObj[[celltype]] <- Seurat::AddMetaData(object=list_seuratObj[[celltype]],metadata = data.frame(dt_embed,row.names = 1)) -->
+<!-- colnames(list_seuratObj[[celltype]]@meta.data)[grep(gsub("-","_",celltype),colnames(list_seuratObj[[celltype]]@meta.data))]  <- paste0(celltype,"_subclust") -->
+<!-- ``` -->
+
+##  make violin plots of celltype- and gerhard modules in celltype subclusters
+
+>>> THIS SECTION NEEDS UPDATING <<<
+
+```{r}
+vec_mods_celltype <- dt_geneMod_perslab[[colModule]][dt_geneMod_perslab[[colCellCluster]]==celltype] %>% unique
+vec_mods_vlnplot = c(vec_mods_celltype, vec_mods_gerhard2018)
+```
+
+```{r}
+#list_seuratObj[[1]]$macs_subclust <- factor(list_seuratObj[[1]]$macs_subclust, levels = 0:6, ordered=T)
+
+plots <- Seurat::VlnPlot(object = list_seuratObj[[celltype]], features = vec_mods_vlnplot, sort = F, group.by = paste0(celltype,"_subclust"), combine = T)
+
+ggsave(plot = plots, filename = here("plots", paste0(prefixData, "_",prefixRun, "_wgcna3_",celltype,"_subclust_modexpr_vlnplots.pdf")), width = 20, height=20)
+```
+
+```{r}
+#list_seuratObj[[1]]$macs_subclust <- factor(list_seuratObj[[1]]$macs_subclust, levels = 0:6, ordered=T)
+
+plots <- Seurat::VlnPlot(object = list_seuratObj[[celltype]], features = vec_mods_vlnplot, sort = F, group.by = "cluster_perslab", combine = T)
+
+ggsave(plot = plots, filename = here("plots", paste0(prefixData, "_",prefixRun, "_wgcna3_",celltype,"_cluster_perslab_modexpr_vlnplots.pdf")), width = 20, height=25)
+```
+
+>>> END OF SECTION NEEDING UPDATING <<<
+
+### macrophage subcluster 2
+
+```{r}
+seuratObj_sub = subset(x = seuratObj,
+                       subset = cluster_perslab_coarse == "Macrophages")
+```
+
+```{r}
+DefaultAssay(seuratObj_sub) <- "integrated"
+```
+
+```{r}
+seuratObj_sub %>%  RunPCA(object=., npcs = npcs, seed.use = randomSeed) %>% RunUMAP(object = ., dims=1:npcs, seed.use = randomSeed) -> seuratObj_sub
+```
+
+```{r}
+DimPlot(object = seuratObj_sub, group.by = "Macrophages_subclust", reduction = "umap", label = T)
+```
+
+```{r}
+dt_tmp <- seuratObj_sub@meta.data %>% setDT
+```
+
+```{r}
+dt_tmp[,lapply(perslab_honeydew3, mean), by=Macrophages_subclust]
+```
+
+seuratObj_macParland
+
+seuratObj
+
+
+# write out results 
+
+GO results 
+
+```{r}
+saveMeta(savefnc=openxlsx::write.xlsx, x = dt_resultsGO, file=here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", celltype, "_clustermarkers_GERR.xlsx")))
+
+```
+
+KEGG results 
+
+```{r}
+
+saveMeta(savefnc=openxlsx::write.xlsx, x = dt_resultsKEGG, file=here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_", celltype, "_clustermarkers_GERR.xlsx")))
+  
+```
+
+<!-- ```{r} -->
+<!-- fwrite(dt_metadata, here("data","liver_perslab_int_seurat_7_metadata_full.csv.gz")) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- fwrite(dt_metadata_celltype, here("data",paste0(prefixData,"_", prefixRun, "_metadata_",celltype,".csv.gz"))) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- path_datExpr_celltype = paste0('/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_datExpr_combat_', celltype,'.csv.gz') -->
+<!-- if (!file.exists(path_datExpr_celltype)) fwrite(x = dt_datExpr_celltype, file=path_datExpr_celltype) -->
+<!-- ``` -->
+
+
+<!-- save **all** subcluster seurat objects -->
+
+<!-- ```{r} -->
+<!-- for (celltype in names(list_seuratObj)) { -->
+<!--   seuratObj_sub = list_seuratObj[[celltype]] -->
+<!--   saveRDS(seuratObj_sub, here("output",paste0("liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj_", prefixOut, "_",celltype,".RDS.gz"))) -->
+<!-- } -->
+<!-- ``` -->
+

@@ -1,5 +1,5 @@
 ---
-title: 'Liver sc data normalization and de-confounding'
+title: 'Liver macparland sc data inspection'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html

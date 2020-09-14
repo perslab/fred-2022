@@ -68,10 +68,19 @@ library("Matrix")
 library("parallel")
 library("dplyr")
 library("ggplot2")
+library("magrittr")
 library("here")
 library("corrr")
 library("irlba")
+#library("tximport")
+# library("rhdf5") # tximport dependency
+# library("readr") # tximport uses this to read in files faster
+# library("biomaRt")
+# library("sleuth")
 library("DESeq2")
+#library("TxDb.Hsapiens.UCSC.hg38.knownGene")
+# library("edgeR")
+# library("csaw")
 ```
 
 ## source utility functions
@@ -110,13 +119,104 @@ generic project constants
 
 ```{r}
 #prefixData <- "aizarani"
-prefixData = "gerhard2018"
+prefixData = "liver_gerhard2018"
 prefixRun = "1"
 #prefixOut <- "SCT"
 prefixOut <- "QC"
 ```
 
 ## load data
+
+<!-- https://haroldpimentel.wordpress.com/2014/05/08/what-the-fpkm-a-review-rna-seq-expression-units/ -->
+
+<!-- https://www.biostars.org/p/376775/ -->
+<!-- https://www.biostars.org/p/157240/ -->
+<!-- https://www.biostars.org/p/143458/#157303 NB: cannot use DESeq for differential expression due to NegBinom assumption. But surely for normalizing?? -->
+<!-- https://bioconductor.org/packages/release/bioc/vignettes/tximport/inst/doc/tximport.html -->
+
+<!-- ```{r} -->
+<!-- path_kallisto_out <- "/scratch/rkm916/kallisto/out/" -->
+<!-- #path_kallisto_out <- "/data/pub-others/gerhard-j_endocrine_soc-2018/kallisto/out/" -->
+<!-- #vec_sampledirs <- dir(path = path_kallisto_out,recursive = F, pattern = "SRR", full.names = T) -->
+<!-- #names(vec_sampledirs) <- dir(path = path_kallisto_out,recursive = F, full.names=F) -->
+<!-- vec_samplepaths <- dir(path = path_kallisto_out,recursive = T, pattern = "abundance\\.h5", full.names = T) -->
+<!-- names(vec_samplepaths) <- dir(path = path_kallisto_out,recursive = F, full.names=F) -->
+<!-- ``` -->
+
+<!-- read transcript names and counts from disk -->
+
+<!-- sum transcripts by gene -->
+
+<!-- ```{r} -->
+<!-- list_dt_geneCounts <- lapply(names(vec_sampledirs), function(samplename) { -->
+<!--   sampledir = vec_sampledirs[samplename] -->
+<!--   dt_tmp <- data.table("gene"=fread(file = paste0(sampledir,"/gene_annotation_col.tsv"), header = F)[[1]], -->
+<!--                        "est_counts"=fread(file=paste0(sampledir, "/est_counts.tsv"), header=F)[[1]]) -->
+<!--   dt_out = dt_tmp[,lapply(.SD,sum),by="gene", .SDcols="est_counts"] -->
+<!--   # sum transcripts by gene -->
+<!--   colnames(dt_out)[ncol(dt_out)] = samplename  -->
+<!--   return(dt_out) -->
+<!--   }) -->
+
+<!-- names(list_dt_geneCounts) <- names(vec_filepaths) -->
+<!-- ``` -->
+
+<!-- merge into counts matrix -->
+
+<!-- ```{r} -->
+<!-- dt_counts <- Reduce(f = function(dt1,dt2) { -->
+<!--   data.table::merge.data.table(dt1,dt2, by="gene", all=T, sort=T) -->
+<!--   }, x = list_dt_geneCounts) -->
+<!-- ``` -->
+
+set up ENST (transcript) to UCSC gene mapping
+
+```{r}
+#ensembl_hs <- biomaRt::useDataset(dataset = "hsapiens_gene_ensembl",mart=ensembl)
+ensembl_hsapiens = biomaRt::useMart("ensembl",dataset="hsapiens_gene_ensembl")
+```
+
+```{r}
+df_hgnc <- biomaRt::getBM(attributes = c("ensembl_transcript_id","hgnc_symbol"), mart=ensembl_hsapiens)
+```
+
+<!-- ```{r} -->
+<!-- txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene -->
+<!-- keytypes(txdb) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- k <- keys(txdb, keytype = "TXNAME") -->
+<!-- tx2gene <- AnnotationDbi::select(txdb, k, "GENEID", "TXNAME") -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- txi.kallisto <- tximport(vec_samplepaths, -->
+<!--                          type = "kallisto", -->
+<!--                          tx2gene = df_hgnc, -->
+<!--                          txIn = TRUE, -->
+<!--                          txOut = FALSE, -->
+<!--                          ignoreTxVersion=T, -->
+<!--                          ignoreAfterBar=T, -->
+<!--                          txIdCol="target_id", -->
+<!--                          countsCol = "est_counts", -->
+<!--                          lengthCol = "length" -->
+<!--                          ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- cts <- txi.kallisto$counts -->
+<!-- normMat <- txi.kallisto$length -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # Obtaining per-observation scaling factors for length, adjusted to avoid -->
+<!-- # changing the magnitude of the counts. -->
+<!-- normMat <- normMat/exp(rowMeans(log(normMat))) -->
+<!-- normCts <- cts/normMat -->
+<!-- ``` -->
 
 ```{r}
 path_htseq_outs <- "/data/pub-others/gerhard-j_endocrine_soc-2018/data-htseq-count/"
@@ -130,7 +230,7 @@ rm(list_htseq_outs)
 ```
 
 ```{r}
-openxlsx::read.xlsx(xlsxFile = here("data", "gerhard2018_patient_metadata.xlsx")) %>% setDT() -> dt_metadata
+openxlsx::read.xlsx(xlsxFile = here("data", "liver_gerhard2018_patient_metadata.xlsx")) %>% setDT() -> dt_metadata
 ```
 
 ```{r}
@@ -184,12 +284,17 @@ dt_metadata_run_acc[Diagnosis =="STEATOSIS 3 ","Diagnosis"] <- "STEATOSIS 3"
 table(dt_metadata_run_acc$Diagnosis)
 ```
 
+<!-- ```{r} -->
+<!-- mat_datExpr = as.matrix(dt_counts[,-1]) -->
+<!-- rownames(mat_datExpr)=dt_counts$gene -->
+<!-- ``` -->
+
 ```{r}
 dim(mat_datExpr)
-# [1] 60623   185
+# [1] 33660   185
 
 dim(dt_metadata_run_acc)
-# [1] 192   5
+# [1] 192   6
 ```
 
 remove .htseq.counts from mat_datExpr colnames
@@ -206,6 +311,8 @@ dt_metadata_run_acc <- dt_metadata_run_acc[run_accession %in% colnames(mat_datEx
 
 ```{r}
 nrow(dt_metadata_run_acc)
+#
+
 dim(mat_datExpr)
 ```
 
@@ -218,13 +325,17 @@ check for duplicate features
 ```{r}
 mat_datExpr %>% rownames %>% duplicated %>% table
 # FALSE 
-# 60623
+# 33660
 ```
 
 check gene names
 
 ```{r}
 mat_datExpr %>% rownames %>% nchar %>% summary
+```
+
+```{r}
+rownames(mat_datExpr)[which(nchar(rownames(mat_datExpr))<3)]
 ```
 
 ### normalize counts
@@ -255,7 +366,6 @@ dds <- estimateSizeFactors(dds)
 ```{r}
 mat_datExpr_norm <- counts(dds, normalized=TRUE)
 
-rm(dds)
 mat_datExpr_norm[0:4,0:4]
 ```
 
@@ -302,13 +412,14 @@ sample SRR8378529 is an outlier on PC 1. How much variance do they account for?
 
 ```{r}
 irlba_out$d
-# [1] 70893897.7  5667674.4  4048015.5  1337544.8   917705.5   573675.3
+
+# [1] 10556373.6  3192680.6  1225694.3   898332.2   516087.4   380275.9
 ```
 
 ```{r}
-mat_datExpr_norm <- mat_datExpr_norm[,-which(colnames(mat_datExpr_norm)=="SRR8378529.htseq.counts")]
+mat_datExpr_norm <- mat_datExpr_norm[,!colnames(mat_datExpr_norm)=="SRR8378529"]
 dim(mat_datExpr_norm)
-# 1] 60623   184
+# 1] 33660   184
 ```
 
 ```{r}
@@ -319,62 +430,64 @@ dim(dt_metadata_run_acc)
 add a fake metadata 'dataset' variable for WGCNA script to subset by
 
 ```{r}
-dt_metadata_run_acc$data <- "gerhard2018"
+dt_metadata_run_acc$data <- "liver_gerhard2018"
 ```
-
-### make a copy of the datExpr replacing ensembl with hgnc gene names
 
 ```{r}
 dt_datExpr_norm <- data.table("gene"=rownames(mat_datExpr_norm),mat_datExpr_norm)
 ```
 
-```{r}
-dt_datExpr_norm_hgnc <- gene_map(dataIn = dt_datExpr_norm, 
-                                 colGene = "gene", 
-                                 df_mapping = fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz"), 
-                                 from = "ensembl_gene_id", 
-                                 to = "hgnc_symbol", 
-                                 replace = T, 
-                                 na.rm = T)
-```
+### make a copy of the datExpr replacing ensembl with hgnc gene names
 
-```{r}
-dt_datExpr_perslab <- fread(here("output","liver_perslab_int_seurat_7_datExpr_combat.csv.gz"))
-```
 
-```{r}
-dim(dt_datExpr_norm)
-#[1] 60623   185
-dim(dt_datExpr_norm_hgnc)
-#[1] 57827   185
-```
+<!-- ```{r} -->
+<!-- dt_datExpr_norm_hgnc <- gene_map(dataIn = dt_datExpr_norm,  -->
+<!--                                  colGene = "gene",  -->
+<!--                                  df_mapping = fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz"),  -->
+<!--                                  from = "ensembl_gene_id",  -->
+<!--                                  to = "hgnc_symbol",  -->
+<!--                                  replace = T,  -->
+<!--                                  na.rm = T) -->
+<!-- ``` -->
 
-We only lost ~ 2800 genes
+<!-- ```{r} -->
+<!-- dt_datExpr_perslab <- fread(here("output","liver_perslab_int_seurat_7_datExpr_combat.csv.gz")) -->
+<!-- ``` -->
 
-any duplicates?
+<!-- ```{r} -->
+<!-- dim(dt_datExpr_norm) -->
+<!-- #[1] 60623   185 -->
+<!-- dim(dt_datExpr_norm_hgnc) -->
+<!-- #[1] 57827   185 -->
+<!-- ``` -->
 
-```{r}
-table(duplicated(dt_datExpr_norm_hgnc[[1]]))
-# FALSE  TRUE 
-# 37159 20668 
-```
+<!-- We only lost ~ 2800 genes -->
 
-damn. Ok, better map perslab data to ensembl to avoid averaging..
-(in liver_cells_prep_WGCNA.Rmd)
+<!-- any duplicates? -->
+
+<!-- ```{r} -->
+<!-- table(duplicated(dt_datExpr_norm_hgnc[[1]])) -->
+<!-- # FALSE  TRUE  -->
+<!-- # 37159 20668  -->
+<!-- ``` -->
+
+<!-- damn. Ok, better map perslab data to ensembl to avoid averaging.. -->
+<!-- (in liver_cells_prep_WGCNA.Rmd) -->
 
 ## wrap up 
 
-datExpr ensembl 
+<!-- datExpr ensembl  -->
+
+
+<!-- ```{r} -->
+<!-- fwrite(dt_datExpr_norm, here("data", paste0(prefixData, "_norm.counts.csv.gz")), compress="gzip") -->
+<!-- ``` -->
+
+datExpr hgnc
 
 ```{r}
 fwrite(dt_datExpr_norm, here("data", paste0(prefixData, "_norm.counts.csv.gz")), compress="gzip")
 ```
-
-<!-- datExpr hgnc -->
-
-<!-- ```{r} -->
-<!-- fwrite(dt_datExpr_norm_hgnc, here("data", paste0(prefixData, "_norm.counts.hgnc.csv.gz")), compress="gzip") -->
-<!-- ``` -->
 
 metadata
 

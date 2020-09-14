@@ -40,7 +40,7 @@ library("parallel")
 library("here")
 library("boot")
 library("magrittr")
-#library("AUCell")
+library("AUCell")
 ```
 
 ## source utility functions
@@ -97,8 +97,8 @@ dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
 colGeneWeights = "pkMs"
 colGeneNames = "genes"
-colModule = "module_pres"
-colCellCluster = "cell_cluster_pres"
+colModule = "module_meta"
+colCellCluster = "cell_cluster_meta"
 # naming convention:
 # <prefixData>_<prefixRun>_<prefixOut>_<outputType>_<params>_<params>_..._<date>.pdf
 
@@ -107,7 +107,12 @@ colCellCluster = "cell_cluster_pres"
 ## load data
 
 ```{r}
-dt_datExpr <- fread(here("data", "liver_gerhard2018_norm.counts.csv.gz"))
+dt_embed_meta <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_modmeta_embed.csv.gz")
+```
+
+```{r}
+mat_embed_meta = as.matrix(dt_embed_meta[,-1])
+rownames(mat_embed_meta) = dt_embed_meta$run_accession
 ```
 
 ```{r}
@@ -158,121 +163,12 @@ dt_metadata_lobinflam_vs_fibrosis = dt_metadata[Diagnosis %in% c("Lob Inflam 1",
 dt_metadata_lobinflam_vs_fibrosis[,condition:=ifelse(Diagnosis=="Fibrosis 3",1,0),]
 ```
 
-## compute module embeddings in bulk data
-
-### original modules (not meta)
-
-gerhard 2018 wgcna modules
-
-```{r}
-dt_geneMod_gerhard2018_merged$module_pres %>% unique -> vec_mods_gerhard2018
-
-vec_mods_gerhard2018<- vec_mods_gerhard2018[!is.na(vec_mods_gerhard2018) & nchar(vec_mods_gerhard2018)>0]
-
-mat_embed_gerhard2018 <- sapply(vec_mods_gerhard2018, function(mod) {
-
-  # get gene weights
-  condition = quote(dt_geneMod_gerhard2018_merged[[colModule]]==mod)
-  vec_pkMs <- dt_geneMod_gerhard2018_merged[eval(condition), pkMs,]
-
-  # normalize module gene weights to sum to 1
-  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
-
-  # find corresponding rows of the expression matrix
-  vec_idxRow <- match(dt_geneMod_gerhard2018_merged[eval(condition), ..colGeneNames, ][[1]], dt_datExpr[,gene])
-
-  # filter out mis-matches
-  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
-  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
-
-  # compute weighted sum of normalized expression
-  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
-
-  vec_pkMs %*% mat_sub
-
-})
-
-rownames(mat_embed_gerhard2018) <- colnames(dt_datExpr)[-1]
-
-mat_embed_gerhard2018[0:4,0:4]
-```
-
-sc wgcna modules
-
-```{r}
-
-dt_geneMod_perslab_merged$module_pres %>% unique -> vec_mods_perslab
-
-vec_mods_perslab<- vec_mods_perslab[!is.na(vec_mods_perslab) & nchar(vec_mods_perslab)>0]
-
-mat_embed_perslab <- sapply(vec_mods_perslab, function(mod) {
-
-  # get gene weights
-  condition = quote(dt_geneMod_perslab_merged[[colModule]]==mod)
-  vec_pkMs <- dt_geneMod_perslab_merged[eval(condition), pkMs,]
-
-  # normalize module gene weights to sum to 1
-  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
-
-  # find corresponding rows of the expression matrix
-  vec_idxRow <- match(dt_geneMod_perslab_merged[eval(condition), ..colGeneNames, ][[1]], dt_datExpr[,gene])
-
-  # filter out mis-matches
-  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
-  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
-
-  # compute weighted sum of normalized expression
-  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
-
-  vec_pkMs %*% mat_sub
-
-})
-
-rownames(mat_embed_perslab) <- colnames(dt_datExpr)[-1]
-
-mat_embed_perslab[0:4,0:4]
-```
-
-```{r}
-mat_embed <- cbind(mat_embed_gerhard2018, mat_embed_perslab)
-```
-
-# Are any modules zero in all samples (because the genes aren't found in the bulk dataset) ? 
-
-```{r}
-vec_allZero <- apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))
-table(vec_allZero)
-# FALSE
-#  69
-```
-
-```{r}
-
-if (any(vec_allZero)) {
-  # get rid of all-zero columns, i.e. modules where none of the genes were matched in the bulk expression data
-  mat_embed <- mat_embed[,!apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))]
-
-  dim(mat_embed)
-}
-```
-
-## scale embeddings to z-scores
-
-```{r}
-mat_embed_scaled = scale(mat_embed)
-```
-
 ### combine embeddings and metadata
 
-```{r}
-list_dt_metadata = list(dt_metadata_steatosis, dt_metadata_lobinflam, dt_metadata_fibrosis, dt_metadata_lobinflam_vs_fibrosis)
-
-names(list_dt_metadata) <- c("steatosis", "lob_inflam", "fibrosis", "fibrosis_vs_lob_inflam")
-```
 
 ```{r}
-list_dt_model_sub <- lapply(list_dt_metadata, function(dt_sub) {
-  data.table(dt_sub, mat_embed_scaled[dt_sub$run_accession,])
+list_dt_model_sub <- lapply(list(dt_metadata_steatosis, dt_metadata_lobinflam, dt_metadata_fibrosis, dt_metadata_lobinflam_vs_fibrosis), function(dt_sub) {
+  data.table(dt_sub, mat_embed_meta[dt_sub$run_accession,])
 })
 names(list_dt_model_sub) <- c("steatosis", "lob_inflam", "fibrosis", "fibrosis_vs_lob_inflam")
 ```
@@ -283,13 +179,13 @@ run linear models
 list_list_tbl_regr <- lapply(names(list_dt_model_sub), function(outcome) {
   dt_model_tmp <- list_dt_model_sub[[outcome]]
   dt_model_tmp$SEX <- factor(dt_model_tmp$SEX)
-  lapply(colnames(mat_embed_scaled), function(module) {
-    formula_tmp <- formula(paste0(module, "~ SEX + BMI_surg + Age + condition"))
+  lapply(colnames(mat_embed_meta), function(module_meta) {
+    formula_tmp <- formula(paste0(module_meta, "~ SEX + BMI_surg + Age + condition"))
     ##mat_model <- model.matrix(object = formula_tmp, data=dt_model_tmp)
     regr<-lm(formula = formula_tmp, dt_model_tmp)
     regr %>% broom::tidy() 
   }) -> list_tbl_tmp 
-  names(list_tbl_tmp) = colnames(mat_embed_scaled)
+  names(list_tbl_tmp) = colnames(mat_embed_meta)
   return(list_tbl_tmp)
 })
 
@@ -351,13 +247,13 @@ lapply(list_dt_condition_coef, function(dt) dt$module[dt$p.value %>% p.adjust(p=
 ```
 
 ```{r}
-dt_geneMod_perslab_merged[["cell_cluster_assoc"]] <- ifelse(dt_geneMod_perslab_merged[["module_pres"]] %in% vec_mods_assoc,dt_geneMod_perslab_merged[["cell_cluster_pres"]], NA_character_)
-dt_geneMod_perslab_merged[["module_assoc"]] <- ifelse(dt_geneMod_perslab_merged[["module_pres"]] %in% vec_mods_assoc,dt_geneMod_perslab_merged[["module_pres"]], NA_character_)
+dt_geneMod_perslab_merged[["module_meta_assoc"]] <- ifelse(dt_geneMod_perslab_merged[["module_meta"]] %in% vec_mods_assoc,dt_geneMod_perslab_merged[["module_meta"]], NA_character_)
+dt_geneMod_perslab_merged[["cell_cluster_meta_assoc"]] <- ifelse(dt_geneMod_perslab_merged[["module_meta"]] %in% vec_mods_assoc,dt_geneMod_perslab_merged[["cell_cluster_meta"]], NA_character_)
 ```
 
 ```{r}
-dt_geneMod_gerhard2018_merged[["cell_cluster_assoc"]] <- ifelse(dt_geneMod_gerhard2018_merged[["module_pres"]] %in% vec_mods_assoc,dt_geneMod_gerhard2018_merged[["cell_cluster_pres"]], NA_character_)
-dt_geneMod_gerhard2018_merged[["module_assoc"]] <- ifelse(dt_geneMod_gerhard2018_merged[["module_pres"]] %in% vec_mods_assoc,dt_geneMod_gerhard2018_merged[["module_pres"]], NA_character_)
+dt_geneMod_gerhard2018_merged[["module_meta_assoc"]] <- ifelse(dt_geneMod_gerhard2018_merged[["module_meta"]] %in% vec_mods_assoc,dt_geneMod_gerhard2018_merged[["module_meta"]], NA_character_)
+dt_geneMod_gerhard2018_merged[["cell_cluster_meta_assoc"]] <- ifelse(dt_geneMod_gerhard2018_merged[["module_meta"]] %in% vec_mods_assoc,dt_geneMod_gerhard2018_merged[["cell_cluster_meta"]], NA_character_)
 ```
 
 ## write out results
@@ -365,89 +261,22 @@ dt_geneMod_gerhard2018_merged[["module_assoc"]] <- ifelse(dt_geneMod_gerhard2018
 ```{r}
 for (name in names(list_dt_condition_coef)) {
   
-  fwrite(x=list_dt_condition_coef[[name]], file=paste0(dirWGCNA_tables, prefixData, "_sc_bulk_modules_scaled_", name, "_association_in_gerhard2018", flagDate,".csv"))
-  openxlsx::write.xlsx(x=list_dt_condition_coef[[name]],file = paste0(dirWGCNA_tables, prefixData, "_sc_bulk_modules_scaled_", name, "_association_in_gerhard2018_", flagDate,".xlsx"))
+  fwrite(x=list_dt_condition_coef[[name]], file=paste0(dirWGCNA_tables, prefixData, "_metamods_", name, "_association_in_gerhard2018_", flagDate,".csv"))
+  openxlsx::write.xlsx(x=list_dt_condition_coef[[name]],file = paste0(dirWGCNA_tables, prefixData, "_metamods_", name, "_association_in_gerhard2018_", flagDate,".xlsx"))
   
 }
 ```
 
 ```{r}
 fwrite(dt_geneMod_gerhard2018_merged, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
+
+openxlsx::write.xlsx(x=dt_geneMod_gerhard2018_merged, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.xlsx")
 ```
 
 ```{r}
 fwrite(dt_geneMod_perslab_merged, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
-```
 
-## Additional association analyses
-
-look at individual gene expression 
-
-```{r}
-vec_genes = c("VCAN")
-```
-
-```{r}
-condition = quote(match(vec_genes, dt_datExpr$gene))
- 
-mat_datExpr_sub = dt_datExpr[eval(condition)] %>% dplyr::select(!gene) %>% t  %>% scale 
-
-colnames(mat_datExpr_sub) = vec_genes
-
-rownames(mat_datExpr_sub) <- colnames(dt_datExpr)[-1]
-``` 
-
-run linear models 
-
-```{r}
-list_list_tbl_regr_genes <- lapply(list_dt_metadata, function(dt_metadata_sub) {
-  
-  dt_model_tmp = data.table(dt_metadata_sub, mat_datExpr_sub[dt_metadata_sub$run_accession,])
-  colnames(dt_model_tmp)[(ncol(dt_metadata_sub)+1):ncol(dt_model_tmp)] <- vec_genes
-  dt_model_tmp$SEX <- factor(dt_model_tmp$SEX)
-  
-  lapply(colnames(mat_datExpr_sub), function(gene) {
-    
-    formula_tmp <- formula(paste0(gene, "~ SEX + BMI_surg + Age + condition"))
-    ##mat_model <- model.matrix(object = formula_tmp, data=dt_model_tmp)
-    regr<-lm(formula = formula_tmp, dt_model_tmp)
-    regr %>% broom::tidy() 
-  }) -> list_tbl_tmp 
-  names(list_tbl_tmp) = colnames(mat_datExpr_sub)
-  return(list_tbl_tmp)
-})
-
-names(list_list_tbl_regr_genes) <- names(list_dt_metadata)
+openxlsx::write.xlsx(dt_geneMod_perslab_merged, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.xlsx")
 ```
 
 
-
-
-
-
-
-
-
-
-
-
-```{r}
-lapply(vec_genes, function(gene) {
-  formula_tmp <- formula(paste0(gene, "~ fibrosis"))
-  ##mat_model <- model.matrix(object = formula_tmp, data=dt_model_tmp)
-  regr<-lm(formula = formula_tmp, dt_data_genes)
-  regr %>% broom::tidy() 
-}) -> list_tbl_regr
-
-names(list_tbl_regr) <- vec_genes
-```
-
-extract coefficients for the regressors 
-
-```{r}
-mat_out <- sapply(list_tbl_regr, function(tbl_regr) {
-    tbl_regr[tbl_regr$term=="fibrosis",colnames(tbl_regr) %in% c("estimate","std.error","statistic","p.value")] 
-  }) %>% t
-
-dt_coef = data.table("gene"= rownames(mat_out), "condition"="fibrosis", mat_out)
-```

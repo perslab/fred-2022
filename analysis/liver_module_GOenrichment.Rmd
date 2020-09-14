@@ -1,9 +1,9 @@
 ---
-title: 'Epilepsy 10x samples v2 - gene ontology analysis (using gProfiler)'
+title: 'Liver module gene ontology analysis (using gProfiler)'
 author: "Jon Thompson, Pers lab"
 date: "`r Sys.time()`" 
 params: 
-  date: !r Sys.time()
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
   randomSeed: !r 12345
   pValThreshold: !r 0.05
   padjMethod: "bonferroni"
@@ -64,7 +64,7 @@ prefixRun <-  "seurat_7"
 colGeneNames = "genes"
 colGeneWeights ="pkMs"
 colModule = "module_assoc"
-colCellCluster = "cell_cluster_assoc"
+colCellClust = "cell_cluster_assoc"
 
 dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
 dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
@@ -88,7 +88,7 @@ nrepBootstrap = 10000
 Load modules dataframe
 
 ```{r}
-dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged.csv.gz")
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz")
 head(dt_geneMod_perslab)
 ```
 
@@ -112,7 +112,7 @@ vec_mods_perslab
 ```{r}
 list_pkMs_perslab <- lapply(vec_mods_perslab, function(module) {
   vecOut<-dt_geneMod_perslab[[colGeneWeights]][dt_geneMod_perslab[[colModule]]==module]
-  names(vecOut) <- dt_geneMod_perslab[["genes"]][dt_geneMod_perslab[[colModule]]==module]
+  names(vecOut) <- dt_geneMod_perslab[["ensembl"]][dt_geneMod_perslab[[colModule]]==module]
   vecOut <- vecOut[!is.na(names(vecOut))]
   vecOut <- sort(vecOut, decreasing = T)
   vecOut
@@ -140,95 +140,84 @@ names(list_pkMs_gerhard2018)<-vec_mods_gerhard2018
 head(list_pkMs_gerhard2018[[1]])
 ```
 
+```{r}
+list_pkMs_comb <- append(list_pkMs_perslab, list_pkMs_gerhard2018)
+head(list_pkMs_comb[[1]])
+head(names(list_pkMs_comb))
+tail(names(list_pkMs_comb))
+```
+
 ### run gprofiler 
 
-run separately since the two datasets use different gene names, and we want to lose as little info as possible
+run together since gprofiler2 maps to ensembl anyway
 
-by using bonferroni correction for multiple testing is it easy to calculate the correction across both runs (using our preferred correction)
+combine genes in both experiments as background
 
 ```{r}
 
-path_RD_perslab <- here("data", "gerhard2018_genesBackground.RDS.gz")
+path_genesBackground_perslab_ensembl <- here("data", "liver_perslab_genesBackground_ensembl.RDS.gz")
 
-if (!file.exists(path_RDS_perslab)) {
-dt_datExpr_perslab <- fread("./output/liver_perslab_int_seurat_7_datExpr_combat.csv.gz")
-vec_genesBackground_perslab <- dt_datExpr_perslab$genes
-saveRDS(vec_genesBackground_perslab, path_RDS_perslab, compress="gzip")
-rm(dt_datExpr_perslab)
+if (!file.exists(path_genesBackground_perslab_ensembl)) {
+  dt_datExpr_perslab <- fread(here("output","liver_perslab_int_seurat_7_datExpr_combat_ensembl.csv.gz"))
+  vec_genesBackground_perslab <- dt_datExpr_perslab$ensembl_gene_id
+  saveRDS(vec_genesBackground_perslab, path_genesBackground_perslab_ensembl, compress="gzip")
+  rm(dt_datExpr_perslab)
 } else {
-  vec_genesBackground_perslab <- readRDS(path_RDS_perslab)
+  vec_genesBackground_perslab_ensembl <- readRDS(path_genesBackground_perslab_ensembl)
 }
 ```
 
 ```{r}
-list_gost_perslab <- gprofiler2::gost(query=lapply(list_pkMs_perslab, names),
-                                 organism = "hsapiens", 
-                                 ordered_query = T, 
-                                 significant=T,
-                                 exclude_iea = T, 
-                                 correction_method="bonferroni",
-                                 user_threshold=params$pValThreshold,
-                                 custom_bg = vec_genesBackground_perslab,
-                                 sources=c("GO:BP", "GO:CC","GO:MF"))
-```
+path_genesBackground_gerhard2018 <- here("data", "liver_gerhard2018_genesBackground.RDS.gz")
 
-
-```{r}
-path_RDS_gerhard2018 <- here("data", "gerhard2018_genesBackground.RDS.gz")
-
-if (!file.exists(path_RDS_gerhard2018)) {
-dt_datExpr_gerhard2018 <- fread(here("data","gerhard2018_norm.counts.csv.gz"))
-vec_genesBackground_gerhard2018 <- dt_datExpr_gerhard2018$gene
-saveRDS(vec_genesBackground_gerhard2018, path_RDS_gerhard2018, compress="gzip")
+if (!file.exists(path_genesBackground_gerhard2018)) {
+  dt_datExpr_gerhard2018 <- fread(here("data","liver_gerhard2018_norm.counts.csv.gz"))
+  vec_genesBackground_gerhard2018 <- dt_datExpr_gerhard2018$gene
+  saveRDS(vec_genesBackground_gerhard2018, path_genesBackground_gerhard2018, compress="gzip")
 rm(dt_datExpr_gerhard2018)
 } else {
-  vec_genesBackground_perslab <- readRDS(path_RDS_gerhard2018)
+  vec_genesBackground_gerhard2018 <- readRDS(path_genesBackground_gerhard2018)
 }
 ```
 
 ```{r}
-
+vec_genesBackground_comb <- union(vec_genesBackground_perslab_ensembl, vec_genesBackground_gerhard2018)
 ```
 
 ```{r}
-list_gost_gerhard2018 <- gprofiler2::gost(query=lapply(list_pkMs_gerhard2018, names),
+length(vec_genesBackground_comb)
+```
+
+run gprofiler 
+* with bonferroni
+* return all results including not significant
+
+```{r}
+list_gost <- gprofiler2::gost(query=lapply(list_pkMs_comb, names),
                                  organism = "hsapiens", 
                                  ordered_query = T, 
                                  significant=T,
                                  exclude_iea = T, 
-                                 correction_method="bonferroni",
+                                 measure_underrepresentation= FALSE,
+                                 correction_method= "g_SCS",
                                  user_threshold=params$pValThreshold,
-                                 custom_bg = vec_genesBackground_gerhard2018,
-                                 sources=c("GO:BP", "GO:CC","GO:MF"))
+                                 custom_bg = vec_genesBackground_comb,
+                                 sources=c("GO:BP", "GO:CC","GO:MF", "KEGG", "REACTOME", "CORUM", "HP", "WP"))
 ```
 
-## re-correct pvalues
-
-TODO 
+add cell cluster to results
 
 ```{r}
-head(list_gost_perslab$result)
+dt_out <- data.table("cell_cluster"=ifelse(grepl("perslab",list_gost$result$query),dt_geneMod_perslab[[colCellClust]][match(list_gost$result$query, dt_geneMod_perslab[[colModule]])], dt_geneMod_gerhard2018[[colCellClust]][match(list_gost$result$query, dt_geneMod_gerhard2018[[colModule]])]), list_gost$result)
 ```
 
-```{r}
-head(list_gost_gerhard2018$result)
-```
 
 ## write out outputs
 
 ```{r}
-fwrite(list_gost_perslab$result, paste0(dirWGCNA_tables, prefixData,"_",prefixRun,"_GOgprofiler2_perslab_mods_full.csv"))
+fwrite(dt_out, paste0(dirWGCNA_tables, prefixData,"_",prefixRun,"_", params$date, "_sc_bulk_modules_GOgprofiler2_full.csv"))
 ```
 
 ```{r}
-openxlsx::write.xlsx(x=list_gost_perslab$result, file = paste0(dirWGCNA_tables, prefixData,"_",prefixRun,"_GOgprofiler2_perslab_mods_full.xlsx"))
+openxlsx::write.xlsx(x=dt_out, file = paste0(dirWGCNA_tables, prefixData,"_",prefixRun,"_",params$date,"_sc_bulk_modules_GOgprofiler2_full.xlsx"))
 ```
-
-```{r}
-fwrite(list_gost_gerhard2018$result, paste0(dirWGCNA_tables, prefixData,"_",prefixRun,"_GOgprofiler2_gerhard2018_mods_full.csv"))
-```
-
-```{r}
-openxlsx::write.xlsx(x=list_gost_gerhard2018$result, file =paste0(dirWGCNA_tables, prefixData,"_",prefixRun,"_GOgprofiler2_gerhard2018_mods_full.xlsx"))
-```
-

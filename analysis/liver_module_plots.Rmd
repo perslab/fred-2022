@@ -1,5 +1,5 @@
 ---
-title: 'Liver - gene network plots'
+title: 'Liver - gene module plots'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -23,6 +23,11 @@ params:
 #     toc_depth: 3
 #     toc_float: yes
 ---
+
+Notes
+EXERCISE CAUTION, SOME PARTS MAY BE OUT OF DATE
+UP TO DATE:
+* beta plots
 
 # Setup
 
@@ -58,14 +63,14 @@ library("ggplot2")
 library("Matrix")
 library("parallel")
 #library("readr")
-library("tidyr")
+#library("tidyr")
 library("here")
 #library("lme4")
 #library("WGCNA")
 #library("dendextend")
 #library("ggdendro")
-library("ComplexHeatmap")
-library("corrplot")
+#library("ComplexHeatmap")
+#library("corrplot")
 #devtools::install_github(repo = "satijalab/seurat", ref = "develop")
 ```
 
@@ -92,23 +97,8 @@ dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
 dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
 dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
-colModule = "module_pres"
-colCellCluster = "cell_cluster_pres"
-```
-
-we are interested in a subset of the "cluster_perslab_coarse" cell types
-
-```{r}
-vec_celltypesOfInterest <- c("T-cells-alpha-beta",
-                             "NK-like-cells",
-                             "Endothelial-cells",
-                             "T-cells-gamma-delta", 
-                             "Macrophages",  
-                             "Cholangiocytes",        
-                             "Hepatocytes",
-                             "Hepatic-stellate-cells", 
-                             "Dendritic-cells", 
-                             "Hepatic-stem-cells")
+colModule = "module_assoc"
+colCellCluster = "cell_cluster_assoc"
 ```
 
 ## load data
@@ -116,11 +106,117 @@ vec_celltypesOfInterest <- c("T-cells-alpha-beta",
 Seurat object contains expression data and cell + patient-level metadata
 
 ```{r}
-# path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
 path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
 
 seuratObj <- load_obj(path_seuratObj)
 ```
+
+Load modules dataframe
+
+```{r}
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz")
+head(dt_geneMod_perslab)
+```
+
+load association results
+
+```{r}
+list_dt_condition_coef = lapply(c("steatosis","lob_inflam", "fibrosis"), function(condition) {
+  fread(file = paste0(dirWGCNA_tables, prefixData, "_sc_bulk_modules_scaled_",condition,"_association_in_gerhard2018_200511.csv"))})
+```
+
+
+## plot association betas with confidence interval
+
+add confidence interval
+
+```{r}
+list_dt_condition_coef = lapply(list_dt_condition_coef, function(dt_condition_coef){
+  dt_condition_coef = dt_condition_coef[grep("perslab",module)]
+  dt_condition_coef[,lower:=qnorm(p=0.05/2, mean = estimate, sd=std.error)]
+  dt_condition_coef[,upper:=qnorm(p=1-0.05/2, mean = estimate, sd=std.error)]
+})
+```
+
+## celltypes and colors for plot
+
+```{r}
+list_dt_condition_coef = lapply(list_dt_condition_coef, function(dt_condition_coef){
+  # find matching cell type
+  vec_celltype <- dt_geneMod_perslab$cell_cluster_merged[sapply(dt_condition_coef$module, function(eachmod) grep(eachmod, dt_geneMod_perslab$module_merged)[1])] 
+  dt_condition_coef[["celltype"]] = vec_celltype
+  
+  # order rows
+  dt_condition_coef = dt_condition_coef[order(celltype,module)]
+  orderToUse1 = 1:length(vec_celltype)
+  # force row order with factors
+  dt_condition_coef[["celltype"]] = factor(dt_condition_coef[["celltype"]], ordered = T)
+  dt_condition_coef[["celltype"]] = reorder(x=dt_condition_coef[["celltype"]], X = orderToUse1, order=T)
+  
+  dt_condition_coef[["module"]] = factor(gsub("perslab_","",dt_condition_coef[["module"]]), ordered = T)
+  dt_condition_coef[["module"]] = reorder(x=dt_condition_coef[["module"]], X = orderToUse1, order=T)
+  # color bars by cell type
+  vec_color = sample(x=unique(gsub("\\d","",colors())), size=length(unique(vec_celltype)), replace=F)
+  freqs = table(dt_condition_coef[["celltype"]])
+
+  vec_color_celltype = rep(x = vec_color, times = freqs) %>% factor(.,ordered=T)
+  dt_condition_coef[["color"]] = vec_color_celltype
+  return(dt_condition_coef)
+})
+```
+
+```{r}
+names(list_dt_condition_coef) = c("steatosis","lob_inflam", "fibrosis")
+```
+
+plot 
+
+```{r}
+lapply(c("steatosis","lob_inflam", "fibrosis"), function(condition) {
+  dt_condition_coef = list_dt_condition_coef[[condition]]
+  p <- 
+    ggplot(data=dt_condition_coef, aes(x=module, y=estimate, fill=celltype)) +
+    geom_bar(stat="identity", position=position_identity(), group=dt_condition_coef$celltype) + 
+    geom_errorbar(aes(ymin=estimate-std.error, ymax=estimate+std.error), width=.1) +
+    scale_fill_brewer(palette="Paired")+
+    #scale_fill_manual(values=dt_condition_coef$color) + # this is a kluge
+    #scale_fill_manual(values=unique(df_data$celltype)) + # this is a kluge
+    #geom_hline(yintercept=cutoff, linetype="dashed", color = "red") +
+    scale_y_continuous("estimate", expand = c(0, 0)) +
+    scale_x_discrete("module") +  
+    # geom_text(aes(label=module),
+    #         #angle=90,
+    #         #vjust=-1,
+    #         hjust = 2,
+    #         color="black",
+    #         angle=90,
+    #        position = position_dodge(), 
+    #        size=2.5) +
+    theme(axis.text.x = element_text(angle=90,hjust=1),#element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
+  
+  saveMeta(savefnc=ggsave,plot = p,
+           filename = paste0(dirWGCNA_plots,prefixData,"_", prefixRun,  "_sc_mod_", condition, "_assoc_gerhard_", params$date,".pdf"), height=10, width =15)
+})
+```
+
+====================================================================
+
+## featureplot of module embeddings
+
+
+```{r}
+
+#p = FeaturePlot(object = seuratObj, features = "")
+```
+
+
+
+
+
 
 ```{r}
 Idents(seuratObj) <- seuratObj$cluster_perslab_coarse
@@ -129,20 +225,16 @@ seuratObj_sub <- subset(x=seuratObj,
                     idents=vec_celltypesOfInterest)
 ```
 
-load gene module cell embedding matrices
+### load gene module cell embedding matrix
 
-```{r}
-path_dt_embed_sc <-  paste0(dirWGCNA_tables, prefixData, "_",prefixRunWGCNA,"_kIM_cellModEmbed.csv.gz")
-dt_embed_sc <- fread(path_dt_embed_sc)
-dt_embed_sc[0:4,0:5]
-```
+we will need to compute embeddings of all modules - including bulk - in sc
 
-```{r}
-path_dt_embed_moylan2013 <- paste0(dirWGCNA_tables, "moylan2013","_","wgcna1","_modules_sc_cellModEmbed.csv")
-dt_embed_moylan2013 <- fread(path_dt_embed_moylan2013)
-dt_embed_moylan2013[0:4,0:5]
+<!-- ```{r} -->
+<!-- path_dt_embed_gerhard <- paste0(dirWGCNA_tables, "moylan2013","_","wgcna1","_modules_sc_cellModEmbed.csv") -->
+<!-- dt_embed_moylan2013 <- fread(path_dt_embed_moylan2013) -->
+<!-- dt_embed_moylan2013[0:4,0:5] -->
 
-```
+<!-- ``` -->
 
 cbind embeddings
 
@@ -179,24 +271,11 @@ dim(dt_embed_sc_sub)
 <!-- dt_embed_sc_meta <- fread(here("output", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_cellModEmbed_meta.csv"))) -->
 <!-- ``` -->
 
-load data frame with information on module and cell type of origin
 
-```{r}
-path_geneMod <- paste0(dirWGCNA_tables,"liver_perslab_int_", prefixRunWGCNA,"_geneMod_merged.csv.gz")
-  
-dt_geneMod <-fread(file=path_geneMod)
 
-dt_geneMod[1,]
 
-#                 data    run   cell_cluster     module         genes      pkMs
-# 1: liver_perslab_int wgcna2 B_cells_mature indianred3 RP13-580B18.4 0.4231437
 
-```
 
-```{r}
-vec_celltypesOfInterest %>% gsub("-","_",.) -> vec_tmp
-dt_geneMod_sub <- dt_geneMod[,module %in% ..vec_tmp,]
-```
 
 ```{r}
 path_dt_metadataCombined <- here("data", "metadataCombined.csv")
