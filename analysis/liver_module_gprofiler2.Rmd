@@ -1,0 +1,275 @@
+---
+title: 'Liver module gene ontology analysis on fibrosis-associated modules using gProfiler2'
+author: "Jon Thompson, Pers lab"
+date: "`r Sys.time()`" 
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+  padjMethod: "bonferroni"
+output:
+  html_notebook: 
+  df_print: paged
+number_sections: yes
+toc: yes
+toc_depth: 3
+toc_float: yes
+html_document:
+  df_print: paged
+---
+
+previous:
+liver_module_sc_merge_to_metamodules.Rmd
+
+Sources
+https://www.bioconductor.org/packages/release/bioc/vignettes/topGO/inst/doc/topGO.pdf
+http://bioconductor.org/packages/release/BiocViews.html#___OrgDb
+GOSemSim: https://bioconductor.org/packages/release/bioc/vignettes/GOSemSim/inst/doc/GOSemSim.html
+
+## Setup
+
+## Set options
+
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1)
+
+# source functions
+
+source(file=here("perslab-sc-library", "utility_functions.R"))
+source(file=here("perslab-sc-library","functions_sc.R"))
+
+# Load packages
+
+library("dplyr")
+library("Matrix")
+# library("parallel")
+#library("readr")
+library("openxlsx")
+library("data.table")
+library("here")
+library("gprofiler2")
+# ipak(c("dplyr", "ggplot2", "Matrix", "parallel", "RColorBrewer", "readr", "pheatmap", "GOSemSim", "AnnotationHub","org.Hs.eg.db", "GSEABase"))#,"ComplexHeatmap", "liger", "WGCNA", "circlize", "xlsx"))
+
+# constants 
+
+prefixData <- "liver_perslab_int"
+prefixRun <-  "seurat_7"
+
+colGeneNames = "genes"
+colGeneWeights ="pkMs"
+colModule = "module_renamed"
+colCellClust = "cell_cluster_pres"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+
+params = list("randomSeed"=12345, 
+              "date"=substr(gsub("-","",as.character(Sys.Date())),3,1000), 
+              "nrepBootstrap"=1e4, 
+              "pValThreshold" =0.05)
+padjMethod ="bonferroni"
+set.seed(params$randomSeed)
+nrepBootstrap = 10000
+```
+
+## load data
+
+Load modules dataframe
+
+```{r}
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz")
+head(dt_geneMod_perslab)
+```
+
+```{r}
+dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz")
+#head(dt_geneMod_gerhard2018)
+```
+
+
+```{r}
+dt_geneMod_comb = data.table::rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerhard2018))
+#, dt_geneMod_moylan2013))
+
+```
+
+<!-- load association results  -->
+
+<!-- ```{r} -->
+<!-- dt_assoc_gerhard2018 = fread(paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_.csv")) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_assoc_moylan2013 = fread(paste0(dirWGCNA_tables, prefixData,"_", prefixRun, "_sc_bulk_modules_scaled_fibrosis_association_in_moylan2013_200911.csv")) -->
+<!-- ``` -->
+
+<!-- recalculate BH adjustment of p-values with only sc modules -->
+
+<!-- ```{r} -->
+<!-- dt_assoc_gerhard2018_sc = dt_assoc_gerhard2018[grepl("perslab", module)] -->
+<!-- dt_assoc_gerhard2018_sc[,p.value_BH:= p.adjust(p.value, method=params$padjMethod)] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_assoc_moylan2013_sc = dt_assoc_moylan2013[grepl("perslab", module)] -->
+<!-- dt_assoc_moylan2013_sc[,p.value_BH:= p.adjust(p.value, method=params$padjMethod)] -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- vec_mods_gerhard2018 = dt_assoc_gerhard2018_sc[p.value_BH < params$pValThreshold, module] -->
+<!-- vec_mods_moylan2013 = dt_assoc_moylan2013_sc[p.value_BH < params$pValThreshold, module] -->
+<!-- ``` -->
+
+
+```{r}
+vec_mods_assoc = dt_geneMod_comb[nchar(module_fibrosis_gerhard2018) > 0 | nchar(module_lob_inflam_gerhard2018)>0 ,module_renamed] %>% unique
+vec_mods_assoc = vec_mods_assoc[nchar(vec_mods_assoc)>0]
+```
+
+```{r}
+list_pkMs <- lapply(vec_mods_assoc, function(module) {
+  vecOut <- dt_geneMod_comb[[colGeneWeights]][dt_geneMod_comb[[colModule]]==module]
+  names(vecOut) <- dt_geneMod_comb[[colGeneNames]][dt_geneMod_comb[[colModule]]==module]
+  vecOut <- vecOut[!is.na(names(vecOut))]
+  vecOut <- sort(vecOut, decreasing = T)
+  vecOut
+})
+names(list_pkMs)<-vec_mods_assoc
+head(list_pkMs[[1]])
+```
+
+<!-- ```{r} -->
+<!-- vec_mods_gerhard2018 <- unique(na.omit(dt_geneMod_gerhard2018$module_assoc)) -->
+<!-- vec_mods_gerhard2018 <- vec_mods_gerhard2018[nchar(vec_mods_gerhard2018)>0] -->
+<!-- vec_mods_gerhard2018 -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- list_pkMs_gerhard2018 <- lapply(vec_mods_gerhard2018, function(module) { -->
+<!--   vecOut<-dt_geneMod_gerhard2018[[colGeneWeights]][dt_geneMod_gerhard2018[[colModule]]==module] -->
+<!--   names(vecOut) <- dt_geneMod_gerhard2018[["ensembl"]][dt_geneMod_gerhard2018[[colModule]]==module] -->
+<!--   vecOut <- sort(vecOut, decreasing = T) -->
+<!--   vecOut <- vecOut[!is.na(names(vecOut)) & nchar(names(vecOut))>0] -->
+<!--   vecOut -->
+<!-- }) -->
+<!-- names(list_pkMs_gerhard2018)<-vec_mods_gerhard2018 -->
+<!-- head(list_pkMs_gerhard2018[[1]]) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- list_pkMs_comb <- append(list_pkMs_perslab, list_pkMs_gerhard2018) -->
+<!-- head(list_pkMs_comb[[1]]) -->
+<!-- head(names(list_pkMs_comb)) -->
+<!-- tail(names(list_pkMs_comb)) -->
+<!-- ``` -->
+
+### run gprofiler 
+
+load background genes
+
+get a vector of all the genes as a background for gene test
+
+```{r}
+if (!file.exists(here("data","liver_perslab_int_genesBackground.RDS"))) {
+  seuratObj <- load_obj("/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz")
+
+  Seurat::DefaultAssay(seuratObj) = "RNA"
+
+  vec_genes_perslab <- rownames(seuratObj)
+
+  length(vec_genes_perslab)
+  #[1] 36116
+
+  saveRDS(vec_genes_perslab, file = "/projects/jonatan/pub-perslab/18-liver-fred/data/liver_perslab_int_genesBackground.RDS")
+
+  rm(seuratObj)
+
+  } else {
+
+  vec_genes_perslab <- readRDS(here("data","liver_perslab_int_genesBackground.RDS"))
+
+}
+```
+
+```{r}
+if (!file.exists(here("data","liver_gerhard2018_genesBackground.RDS.gz"))) {
+  dt_datExpr_gerhard <- fread(here("data", "liver_gerhard2018_norm.counts.csv.gz"))
+
+  vec_genes_gerhard2018 <- dt_datExpr_gerhard$gene
+
+  length(vec_genes_gerhard2018)
+  #[1] 33660
+
+  saveRDS(vec_genes_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-fred/data/liver_gerhard2018_genesBackground.RDS")
+
+  rm(dt_datExpr_gerhard)
+  
+  } else {
+
+  vec_genes_gerhard2018 <- readRDS(here("data","liver_gerhard2018_genesBackground.RDS"))
+
+}
+```
+
+```{r}
+vec_allGenes <- union(vec_genes_perslab, vec_genes_gerhard2018)
+#vec_allGenes <- union(vec_allGenes, vec_genes_moylan2013)
+length(vec_allGenes)
+# [1]36131
+```
+
+<!-- ```{r} -->
+<!-- vec_genesBackground_comb <- union(vec_genesBackground_perslab_ensembl, vec_genesBackground_gerhard2018) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- length(vec_genesBackground_comb) -->
+<!-- ``` -->
+
+<!-- run gprofiler  -->
+* with bonferroni
+* return all results including not significant
+
+```{r}
+list_gost <- gprofiler2::gost(query=lapply(list_pkMs, names),
+                                 organism = "hsapiens", 
+                                 ordered_query = T, 
+                                 significant=T,
+                                 exclude_iea = T, 
+                                 measure_underrepresentation= FALSE,
+                                 correction_method= "g_SCS",
+                                 user_threshold=params$pValThreshold,
+                                 custom_bg = vec_allGenes,
+                                 sources=c("GO:BP", "GO:CC","GO:MF", "KEGG", "REAC"))#, "CORUM", "HP", "WP"))
+```
+
+add cell cluster to results
+
+<!-- ```{r} -->
+<!-- dt_out <- data.table("cell_cluster"=ifelse(grepl("perslab",list_gost$result$query),dt_geneMod_perslab[[colCellClust]][match(list_gost$result$query, dt_geneMod_perslab[[colModule]])], dt_geneMod_gerhard2018[[colCellClust]][match(list_gost$result$query, dt_geneMod_gerhard2018[[colModule]])]), list_gost$result) -->
+<!-- ``` -->
+
+```{r}
+dt_out <- data.table(
+  "cell_cluster"=dt_geneMod_comb[[colCellClust]][match(list_gost$result$query, dt_geneMod_comb[[colModule]])],
+  list_gost$result
+  )
+```
+
+## write out outputs
+
+```{r}
+fwrite(dt_out, paste0(dirWGCNA_tables, prefixData,"_",prefixRun,"_", params$date, "_gprofiler2_enrichment_full.csv"))
+```
+
+```{r}
+openxlsx::write.xlsx(x=dt_out, file = paste0(dirWGCNA_tables, prefixData,"_",prefixRun,"_",params$date,"_gprofiler2_enrichment_full.xlsx"))
+```

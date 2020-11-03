@@ -1,5 +1,5 @@
 ---
-title: 'Liver - add cell embeddings on prioritised modules to seurat object'
+title: 'Liver - embed modules in moylan 2013 (linear combination)'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -24,9 +24,7 @@ params:
 #     toc_float: yes
 ---
 
-previous: ran WGCNA on perslab, moylan and gerhard separately
-
-
+previous: liver_module_bulk_overlap_with_sc.Rmd
 
 # Setup
 
@@ -41,13 +39,14 @@ library("openxlsx")
 library("data.table")
 library("here")
 
-## source utility functions
+
+# source utility functions
+
 
 source(here("/perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
 
-
-## Set options
+# Set options
 
 options(stringsAsFactors = F, 
         use="pairwise.complete.obs", 
@@ -69,8 +68,7 @@ setDTthreads(threads = NULL,
              restore_after_fork = NULL)
 getDTthreads()
 
-## Set constants
-
+# Set constants
 
 randomSeed = 12345
 set.seed(randomSeed)
@@ -87,8 +85,6 @@ flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
 
 prefixData = "liver_perslab_int"
 prefixRun = "seurat_7"
-prefixOut <- "SCTint"
-
 prefixRun_WGCNA = "wgcna3"
 
 dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
@@ -98,45 +94,74 @@ dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
 colGeneWeights = "pkMs"
 colGeneNames = "genes"
-colModule = "module"
-colCellCluster = "cell_cluster"
-
+colModule = "module_renamed"
+colCellCluster = "cell_cluster_pres"
 ```
 
 ## load data
 
-Seurat object contains expression data and cell + patient-level metadata
+bulk expression data 
 
 ```{r}
-path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
+dt_datExpr <- fread(here("data", "moylan2013.norm.expr.qc.csv.gz"))
+```
 
-seuratObj <- load_obj(path_seuratObj)
+convert columns to numeric 
+
+```{r}
+strTmp <- colnames(dt_datExpr[,-"gene"])
+dt_datExpr[, (strTmp) := lapply(.SD, as.numeric), .SDcols = strTmp]
+```
+
+```{r}
+mat_datExpr <- as.matrix(dt_datExpr[,-1])
+rownames(mat_datExpr) = dt_datExpr$gene
+mat_datExpr[0:3,0:3]
 ```
 
 Load modules dataframe
 
 ```{r}
 dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz")
-head(dt_geneMod_perslab)
+#head(dt_geneMod_perslab)
 
 dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz")
-head(dt_geneMod_gerhard2018)
-```
+#head(dt_geneMod_gerhard2018)
 
+dt_geneMod_moylan2013 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.csv.gz")
+#head(dt_geneMod_moylan2013 )
+
+dt_geneMod_merged = rbindlist(list(dt_geneMod_perslab,dt_geneMod_gerhard2018, dt_geneMod_moylan2013), fill=TRUE)
+```
 
 ```{r}
-DefaultAssay(seuratObj) <- "SCT_combat"
+dt_geneMod_merged[[colModule]] %>% unique -> vec_mods
+vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
 ```
+
+## compute embeddings
+
+compute module embeddings as weighted sums of normalized expression data
+
+<!-- filter out genes with zero sd -->
 
 <!-- ```{r} -->
-<!-- seuratObj <- ScaleData(seuratObj, features = rownames(seuratObj)) -->
+<!-- vec_sd = apply(mat_datExpr, MARGIN=1, FUN = sd) -->
 <!-- ``` -->
 
-```{r}
-mat_datExpr <- as.matrix(GetAssayData(object = seuratObj, assay = "SCT_combat", slot="data"))
-rownames(mat_datExpr) <- rownames(seuratObj)
-mat_datExpr[0:4,0:4]
-```
+<!-- ```{r} -->
+<!-- table(vec_sd==0) -->
+<!-- # FALSE  TRUE  -->
+<!-- # 22084   796  -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- mat_datExpr <- mat_datExpr[vec_sd!=0,] -->
+<!-- ``` -->
+
+#### using normalized data, but scaling first (no centering, though!)
+
+filter out genes with zero sd
 
 ```{r}
 vec_sd = apply(mat_datExpr, MARGIN=1, FUN = sd)
@@ -144,41 +169,62 @@ vec_sd = apply(mat_datExpr, MARGIN=1, FUN = sd)
 
 ```{r}
 table(vec_sd==0)
-# FALSE 
-# 24609 
+# FALSE  TRUE 
+# 22084   796
 ```
-
-only keep genes that are part of modules
 
 ```{r}
-mat_datExpr = mat_datExpr[rownames(mat_datExpr) %in% c(dt_geneMod_perslab$genes, dt_geneMod_gerhard2018$genes),]
-
-dim(mat_datExpr)
+mat_datExpr <- mat_datExpr[vec_sd!=0,]
 ```
-<!-- ```{r} -->
-<!-- mat_datExpr <- mat_datExpr[vec_sd!=0,] -->
-<!-- ``` -->
 
-now scale (without centering)
+now scale by the standard deviation (without centering)
 
 ```{r}
 mat_datExpr %>% t %>% scale(., center=FALSE, scale=apply(.,2,sd,na.rm=T)) %>% t -> mat_datExpr_scaled
 ```
 
+compute embeddings
 
-### compute module embeddings in sc data
+<!-- unscaled -->
 
-```{r}
-dt_geneMod_merged = rbindlist(list(dt_geneMod_perslab,dt_geneMod_gerhard2018))
+<!-- ```{r} -->
+<!-- mat_embed <- sapply(vec_mods, function(mod) { -->
 
-dt_geneMod_merged[[colModule]] %>% unique -> vec_mods
+<!--   # get gene weights -->
+<!--   condition = quote(dt_geneMod_merged[[colModule]]==mod) -->
+<!--   vec_pkMs <- dt_geneMod_merged[eval(condition), pkMs,] -->
 
-vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
-```
+<!--   # normalize module gene weights to sum to 1 -->
+<!--   vec_pkMs <- vec_pkMs/sum(vec_pkMs) -->
+
+<!--   # find corresponding rows of the expression matrix -->
+<!--   vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr)) -->
+
+<!--   # filter out mis-matches -->
+<!--   vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)] -->
+<!--   vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)] -->
+
+<!--   # compute weighted sum of normalized expression -->
+<!--   mat_datExpr[vec_idxRow,] %>% as.matrix -> mat_datExpr_sub -->
+
+<!--   if (nrow(mat_datExpr_sub)==0) { -->
+<!--     warning(paste0(mod, ": no module genes found in datExpr")) -->
+<!--     return(rep(NA_real_, ncol(mat_datExpr_sub))) -->
+<!--   } else if (nrow(mat_datExpr_sub)>0 & nrow(mat_datExpr_sub)<length(vec_pkMs)/2) { -->
+<!--     warning(paste0(mod, ": only ", nrow(mat_datExpr_sub), " module genes detected")) -->
+<!--   } -->
+<!--   vec_pkMs %*% mat_datExpr_sub -->
+
+<!-- }) -->
+
+<!-- rownames(mat_embed) <- colnames(mat_datExpr) -->
+
+<!-- mat_embed[0:4,0:4] -->
+<!-- ``` -->
 
 ```{r}
 mat_scaled_embed <- sapply(vec_mods, function(mod) {
- 
+
   # get gene weights
   condition = quote(dt_geneMod_merged[[colModule]]==mod)
   vec_pkMs <- dt_geneMod_merged[eval(condition), pkMs,]
@@ -192,14 +238,13 @@ mat_scaled_embed <- sapply(vec_mods, function(mod) {
   # filter out mis-matches
   vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
   vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
-  
-  #print(length(vec_pkMs)/2)
-  # compute weighted sum of normalized and scaled expression
+
+  # compute weighted sum of normalized expression
   mat_datExpr_scaled[vec_idxRow,] %>% as.matrix -> mat_datExpr_scaled_sub
   
   if (nrow(mat_datExpr_scaled_sub)==0) {
-  warning(paste0(mod, ": no module genes found in datExpr"))
-  return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
+    warning(paste0(mod, ": no module genes found in datExpr"))
+    return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
   } else if (nrow(mat_datExpr_scaled_sub)>0 & nrow(mat_datExpr_scaled_sub)<(length(vec_pkMs)/2)) {
     warning(paste0(mod, ": only ", nrow(mat_datExpr_scaled_sub), " module genes detected"))
     return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
@@ -213,36 +258,47 @@ rownames(mat_scaled_embed) <- colnames(mat_datExpr_scaled)
 mat_scaled_embed[0:4,0:4]
 ```
 
-scale embeddings 
-
-
 ## rescale the embeddings to standard deviation 1
 
 ```{r}
 mat_scaled_embed_rescaled <- scale(mat_scaled_embed, center=FALSE, scale=apply(mat_scaled_embed,2,sd,na.rm=T))
 ```
 
-## add new embeddings to Seurat object
-
-<!-- ### first remove the old -->
-
 <!-- ```{r} -->
-<!-- vec_mods_old <- unique(dt_geneMod_merged$module_filter) -->
-<!-- for (mod_old in vec_mods_old){  -->
-<!--   if (mod_old %in% colnames(seuratObj@meta.data)) { -->
-<!--     seuratObj[[mod_old]] <- NULL   -->
-<!--   } -->
-<!-- } -->
+<!-- mat_cor = cor(mat_embed, mat_scaled_embed) -->
 <!-- ``` -->
 
-```{r}
-seuratObj <- AddMetaData(object=seuratObj, metadata = data.frame(row.names=rownames(mat_scaled_embed_rescaled), mat_scaled_embed_rescaled))
-```
+<!-- ```{r} -->
+<!-- vec_diag = mat_cor[row(mat_cor)==col(mat_cor)] -->
+<!-- median(vec_diag) -->
+<!-- # [1] 0.9981947 -->
+<!-- ``` -->
+
+scaling makes no difference here, i.e. the microarray measurements are already scaled
+
+<!-- plot the distributions of activity of a few modules -->
+
+<!-- ```{r} -->
+<!-- hist(mat_embed[,64],breaks = 50) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- mat_embed_log2  = log2(mat_embed+1) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- hist(mat_embed_log2[,10],breaks = 50) -->
+<!-- ``` -->
+
+
+write out scaled weighted sum module embeddings matrix
 
 ```{r}
-saveRDS(object = seuratObj, file = path_seuratObj, compress = "gzip")
+dt_scaled_embed_rescaled = data.table("GEO_accession" = rownames(mat_scaled_embed_rescaled), mat_scaled_embed_rescaled)
+
+fwrite(dt_scaled_embed_rescaled, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mat_scaled_embed_moylan2013.csv.gz", compress="gzip")
 ```
 
-next: liver_module_filter_prune.Rmd
-
+next:
+liver_module_association_moylan2013.Rmd
 

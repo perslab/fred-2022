@@ -24,6 +24,8 @@ params:
 #     toc_float: yes
 ---
 
+previous: liver_module_preservation.Rmd
+
 # Setup
 
 ## Set options
@@ -36,9 +38,7 @@ options(stringsAsFactors = F,
         verbose=F,
         mc.cores=40 # for parallel computation
         ) 
-```
 
-```{r}
 randomSeed = 12345
 set.seed(randomSeed)
 
@@ -46,26 +46,22 @@ pAdjMethod = "BH"
 pValThreshold = 0.05 #params$pValThreshold
 
 flagDate = substr(gsub("-","",as.character(Sys.Date())),3,1000)
-```
 
 ## Load packages
 
-```{r}
 library("data.table")
-```
+library("here")
 
 ## source utility functions
 
-```{r}
 source(here("perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
-```
 
 ## Set constants
 
-generic project constants 
+## generic project constants 
 
-```{r}
+
 #prefixData <- "aizarani"
 prefixData = "liver_perslab_int"
 prefixRun = "seurat_7"
@@ -77,8 +73,8 @@ dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
 dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
 dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
-colModule = "module"
-colCellClust = "cell_cluster"
+colModule = "module_pres"
+colCellClust = "cell_cluster_pres"
 ```
 
 ## load data
@@ -88,55 +84,127 @@ load WGCNA gene module tables
 perslab 
 
 ```{r}
-path_geneMod_perslab <- paste0(dirWGCNA_tables,prefixData, "_",prefixRun_WGCNA,"_geneMod_merged_200325.csv.gz")
+path_geneMod_perslab <- paste0(dirWGCNA_tables,prefixData, "_",prefixRunWGCNA,"_geneMod.csv.gz")
 dt_geneMod_perslab <-fread(file=path_geneMod_perslab )
 dt_geneMod_perslab[0:3,]
-#                data    run   cell_cluster     module    genes        pkMs
-# 1: liver_perslab_int wgcna3 B-cells-mature lightblue3 KIAA1551 0.009426350
-# 2: liver_perslab_int wgcna3 B-cells-mature lightblue3     ZEB1 0.008230427
-# 3: liver_perslab_int wgcna3 B-cells-mature lightblue3    XYLT1 0.008185864
-```
 
-gerhard 2018
 
-```{r}
-path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz")
+# gerhard 2018
+
+
+path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_wgcna3_geneMod.csv.gz")
 dt_geneMod_gerhard2018 <-fread(file=path_geneMod_gerhard2018)
 dt_geneMod_gerhard2018[0:3,]
-#             data    run cell_cluster       module           genes       pkMs
-# 1: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000171848 0.03919702
-# 2: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000066279 0.03745749
-# 3: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000131747 0.03606625
+
+# moylan 2013
+
+# path_geneMod_moylan2013 <- paste0(dirWGCNA_tables,"liver_moylan2013_wgcna1_geneMod.csv.gz")
+# dt_geneMod_moylan2013 <-fread(file=path_geneMod_moylan2013)
+# dt_geneMod_moylan2013[0:3,]
 ```
 
-
 ```{r}
+dt_geneMod_perslab$module_renamed = dt_geneMod_perslab[[colModule]]
+vec_cell_cluster = unique(dt_geneMod_perslab[[colCellClust]])
+vec_cell_cluster = vec_cell_clust[nchar(vec_cell_clust)>0]
 
-dt_geneMod_perslab$module_renamed = dt_geneMod_perslab$module 
-
-for (cell_cluster in unique(dt_geneMod_perslab$cell_cluster)) {
-  vec_cell_cluster_mod = unique(dt_geneMod_perslab$module[dt_geneMod_perslab$cell_cluster==cell_cluster])
+for (cell_cluster in vec_cell_cluster) {
+  vec_cell_cluster_mod = unique(dt_geneMod_perslab[[colModule]][dt_geneMod_perslab[[colCellClust]]==cell_cluster])
+  vec_cell_cluster_mod = vec_cell_cluster_mod[nchar(vec_cell_cluster_mod)>0]
   for (i in 1:length(vec_cell_cluster_mod))  {
-    dt_geneMod_perslab$module_renamed[dt_geneMod_perslab$module_renamed==vec_cell_cluster_mod[i]] = paste0(cell_cluster, "_", i)
+      dt_geneMod_perslab$module_renamed[dt_geneMod_perslab$module_renamed==vec_cell_cluster_mod[i]] = paste0(cell_cluster, "_", i) 
   }
 }
-
 ```
 
 ```{r}
 
-dt_geneMod_gerhard2018$module_renamed = dt_geneMod_gerhard2018$module 
-vec_mod = unique(dt_geneMod_gerhard2018$module)
+dt_geneMod_gerhard2018$module_renamed = dt_geneMod_gerhard2018[[colModule]]
+vec_mod = unique(dt_geneMod_gerhard2018[[colModule]])
+vec_mod = vec_mod[nchar(vec_mod)>0]
 for (i in 1:length(vec_mod))  {
-  dt_geneMod_gerhard2018$module_renamed[dt_geneMod_gerhard2018$module_renamed==vec_mod[i]] = paste0("gerhard2018_", i)
+  dt_geneMod_gerhard2018$module_renamed[dt_geneMod_gerhard2018$module_renamed==vec_mod[i]] = paste0("gerhard2018_", i) 
 }
 
 ```
 
+<!-- ```{r} -->
+
+<!-- dt_geneMod_moylan2013$module_renamed = dt_geneMod_moylan2013[[colModule]] -->
+<!-- vec_mod = unique(dt_geneMod_moylan2013[[colModule]]) -->
+<!-- vec_mod = vec_mod[nchar(vec_mod)>0] -->
+<!-- for (i in 1:length(vec_mod))  { -->
+<!--   dt_geneMod_moylan2013$module_renamed[dt_geneMod_moylan2013$module_renamed==vec_mod[i]] =  paste0("moylan2013_", i)  -->
+<!-- } -->
+
+<!-- ``` -->
+
+make a dictionary with an overview of what has happened
+
 ```{r}
-fwrite(dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/gerhard2018_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
+vec_mods_renamed = unique(dt_geneMod_perslab$module_renamed)
+vec_mods_renamed = vec_mods_renamed[nchar(vec_mods_renamed)>0]
+
+names(vec_mods_renamed) = sapply(vec_mods_renamed, function(mod_renamed){ dt_geneMod_perslab$module_filter[grep(mod_renamed, dt_geneMod_perslab$module_renamed)[1]]})
 ```
 
 ```{r}
-fwrite(dt_geneMod_perslab, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
+vec_mods_filter = unique(dt_geneMod_perslab$module_filter)
+vec_mods_filter = vec_mods_filter[nchar(vec_mods_filter)>0]
 ```
+
+<!-- ```{r} -->
+<!-- vec_mods_merged = unique(dt_geneMod_perslab$module_merged) -->
+<!-- vec_mods_merged = vec_mods_merged[nchar(vec_mods_merged)>0] -->
+<!-- ``` -->
+
+```{r}
+dt_dict = data.table("original"=vec_mods_filter, 
+                     "new"=ifelse(vec_mods_filter %in% names(vec_mods_renamed), vec_mods_renamed[vec_mods_filter], vec_mods_filter))
+```
+
+<!-- ```{r} -->
+<!-- dt_dict[["new"]] = ifelse(!dt_dict$new %in% c(vec_mods_renamed,vec_mods_merged), "pruned",dt_dict$new) -->
+<!-- ``` -->
+
+```{r}
+dt_dict[["new"]] = ifelse(!dt_dict$new %in% vec_mods_renamed, "not_preserved", dt_dict$new)
+```
+
+<!-- ```{r} -->
+<!-- log_prune = read_lines("/projects/jonatan/pub-perslab/18-liver-wgcna/log/merge2_201006_mod_merge_log.txt") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- for (i in 1:nrow(dt_dict)){  -->
+<!--   if (dt_dict$new[i]=="pruned") { -->
+<!--     dt_dict$new[i] <- paste0("pruned due to overlap with ", grep(dt_dict$original[i], log_prune, value=T) %>% strsplit(., " with ") %>% '[['(1) %>% '['(2)) -->
+<!--   }  -->
+<!-- } -->
+<!-- ``` -->
+
+
+### write to disk
+
+```{r}
+openxlsx::write.xlsx(dt_dict, paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_", prefixRunWGCNA, "_module_renamed_dict_", flagDate, ".xlsx"))
+```
+
+
+```{r}
+fwrite(dt_geneMod_perslab, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz", compress="gzip")
+
+# openxlsx::write.xlsx(x = dt_geneMod_perslab, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.xlsx")
+# 
+# fwrite(dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz", compress="gzip")
+
+# openxlsx::write.xlsx(x = dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.xlsx")
+# 
+# fwrite(dt_geneMod_moylan2013, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.csv.gz", compress="gzip")
+
+# openxlsx::write.xlsx(x = dt_geneMod_moylan2013, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.xlsx")
+```
+
+next: 
+liver_module_embed_in_moylan2013.Rmd
+liver_module_embed_in_gerhard2018.Rmd

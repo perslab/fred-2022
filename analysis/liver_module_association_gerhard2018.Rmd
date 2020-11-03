@@ -25,6 +25,8 @@ params:
 #     toc_float: yes
 ---
 
+Previous: liver_module_embed_in_gerhard2018.Rmd
+
 # Setup
 
 ## Load packages
@@ -41,18 +43,17 @@ library("here")
 library("boot")
 library("magrittr")
 #library("AUCell")
-```
+library("ggplot2")
+#library("simpleboot")
+library("boot")
+#library("car")#https://socialsciences.mcmaster.ca/jfox/Books/Companion/appendices/Appendix-Bootstrapping.pdf
+# source utility functions
 
-## source utility functions
-
-```{r}
 source(here("/perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
-```
 
-## Set options
+# Set options
 
-```{r}
 options(stringsAsFactors = F, 
         use="pairwise.complete.obs", 
         warn=1, 
@@ -63,6 +64,8 @@ options(stringsAsFactors = F,
         ) 
 
 RNGkind("L'Ecuyer-CMRG")
+
+R=1e3-1
 # ?boot
 # For most of the boot methods the resampling is done in the master process, but not if simple = TRUE nor sim = "parametric". In those cases (or where statistic itself uses random numbers), more care is needed if the results need to be reproducible. Resampling is done in the worker processes by censboot(sim = "wierd") and by most of the schemes in tsboot (the exceptions being sim == "fixed" and sim == "geom" with the default ran.gen).
 # 
@@ -72,20 +75,17 @@ RNGkind("L'Ecuyer-CMRG")
 setDTthreads(threads = NULL, 
              restore_after_fork = NULL)
 getDTthreads()
-```
 
-## Set constants
+# Set constants
 
-```{r}
+
 randomSeed = 12345
 set.seed(randomSeed)
 flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
-```
+
+# generic project constants 
 
 
-generic project constants 
-
-```{r}
 prefixData = "liver_perslab_int"
 prefixRun = "seurat_7"
 prefixRun_WGCNA = "wgcna3"
@@ -97,7 +97,7 @@ dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
 colGeneWeights = "pkMs"
 colGeneNames = "genes"
-colModule = "module_pres"
+colModule = "module_renamed"
 colCellCluster = "cell_cluster_pres"
 # naming convention:
 # <prefixData>_<prefixRun>_<prefixOut>_<outputType>_<params>_<params>_..._<date>.pdf
@@ -106,278 +106,658 @@ colCellCluster = "cell_cluster_pres"
 
 ## load data
 
-```{r}
-dt_datExpr <- fread(here("data", "liver_gerhard2018_norm.counts.csv.gz"))
-```
+<!-- ```{r} -->
+<!-- dt_datExpr <- fread(here("data", "liver_gerhard2018_norm.counts.csv.gz")) -->
+<!-- ``` -->
+### patient metadata
 
 ```{r}
 dt_metadata <- fread(here("data", "liver_gerhard2018_patient_metadata_qc.csv.gz"))
 ```
 
-load data.table with information on module and cell type of origin
+### embeddings
+
+this includes sc and bulk modules
 
 ```{r}
-path_geneMod_perslab_merged <- paste0(dirWGCNA_tables,prefixData, "_",prefixRun_WGCNA,"_geneMod_merged_200325.csv.gz")
-  
-dt_geneMod_perslab_merged <- fread(path_geneMod_perslab_merged)
+# df_embed = fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mod_embed_gerhard2018.csv.gz") %>% setDF
+df_scaled_embed = fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mat_scaled_embed_gerhard2018.csv.gz") %>% setDF
 
-head(dt_geneMod_perslab_merged)
+mat_scaled_embed = df_scaled_embed[,-1] %>% as.matrix
+rownames(mat_scaled_embed) = df_scaled_embed$run_accession
+mat_scaled_embed[0:4,0:4]
 ```
 
-```{r}
-path_geneMod_gerhard2018_merged <- paste0(dirWGCNA_tables,"liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz")
-  
-dt_geneMod_gerhard2018_merged <- fread(path_geneMod_gerhard2018_merged)
+<!-- ```{r} -->
+<!-- # also load unscaled, for comparison -->
+<!-- df_unscaled_embed = fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mat_unscaled_embed_gerhard2018.csv.gz") %>% setDF -->
 
-head(dt_geneMod_gerhard2018_merged)
-```
+<!-- mat_unscaled_embed = df_unscaled_embed[,-1] %>% as.matrix -->
+<!-- rownames(mat_unscaled_embed) = df_unscaled_embed$run_accession -->
+<!-- mat_unscaled_embed[0:4,0:4] -->
+<!-- ``` -->
+
+<!-- load data.table with information on module and cell type of origin -->
+
+<!-- ```{r} -->
+<!-- path_geneMod_perslab <- paste0(dirWGCNA_tables,prefixData, "_",prefixRun_WGCNA,"_geneMod.csv.gz") -->
+<!-- dt_geneMod_perslab <- fread(path_geneMod_perslab) -->
+<!-- #head(dt_geneMod_perslab) -->
+
+<!-- path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_wgcna3_geneMod.csv.gz") -->
+<!-- dt_geneMod_gerhard2018 <- fread(path_geneMod_gerhard2018) -->
+<!-- #head(dt_geneMod_gerhard2018) -->
+
+<!-- path_geneMod_moylan2013 <- paste0(dirWGCNA_tables,"liver_moylan2013_wgcna1_geneMod.csv.gz") -->
+<!-- dt_geneMod_moylan2013 <- fread(path_geneMod_moylan2013) -->
+<!-- #head(dt_geneMod_moylan2013) -->
+<!-- ``` -->
 
 # analysis
 
 subset metadata and transform variables to 0,1,2
 
 ```{r}
+table(dt_metadata$Diagnosis)
+# Fibrosis 3 Fibrosis 3/4   Fibrosis 4 Lob Inflam 1 Lob Inflam 2       NORMAL  STEATOSIS 2  STEATOSIS 3 
+#           19           12           28           38           13           24           34           16
+```
+
+```{r}
 dt_metadata_steatosis = dt_metadata[Diagnosis %in% c("NORMAL", "STEATOSIS 2", "STEATOSIS 3"),]
 dt_metadata_steatosis[,condition:=ifelse(Diagnosis=="NORMAL",0,1)]
 dt_metadata_steatosis[Diagnosis=="STEATOSIS 3","condition"] <- 2
-```
 
-```{r}
 dt_metadata_lobinflam = dt_metadata[Diagnosis %in% c("NORMAL","Lob Inflam 1", "Lob Inflam 2"),]
 dt_metadata_lobinflam[,condition:=ifelse(Diagnosis=="NORMAL",0,1)]
 dt_metadata_lobinflam[Diagnosis=="Lob Inflam 2","condition"] <- 2
-```
 
-```{r}
 dt_metadata_fibrosis = dt_metadata[Diagnosis %in% c("NORMAL","Fibrosis 3"),]
 dt_metadata_fibrosis[,condition:=ifelse(Diagnosis=="Fibrosis 3",1,0),]
-```
+# binary, so factor. NB: This will change the lm variable for case  to condition1
+dt_metadata_fibrosis$condition <- as.factor(dt_metadata_fibrosis$condition)
 
-```{r}
 dt_metadata_lobinflam_vs_fibrosis = dt_metadata[Diagnosis %in% c("Lob Inflam 1", "Lob Inflam 2","Fibrosis 3"),]
 dt_metadata_lobinflam_vs_fibrosis[,condition:=ifelse(Diagnosis=="Fibrosis 3",1,0),]
+# binary, so factor. NB: This will change the lm variable for case  to condition1
+dt_metadata_lobinflam_vs_fibrosis$condition <- as.factor(dt_metadata_lobinflam_vs_fibrosis$condition)
+
+dt_metadata_fibrosis_severity = dt_metadata[grepl("Fibrosis", Diagnosis),]
+dt_metadata_fibrosis_severity[,condition:=ifelse(Diagnosis=="Fibrosis 3",0,1),]
+# binary, so factor. NB: This will change the lm variable for case  to condition1
+dt_metadata_fibrosis_severity$condition <- as.factor(dt_metadata_fibrosis_severity$condition)
 ```
 
-## compute module embeddings in bulk data
+<!-- # Are any modules zero in all samples (because the genes aren't found in the bulk dataset) ?  -->
 
-### original modules (not meta)
+<!-- ```{r} -->
+<!-- vec_allZero <- apply(X=mat_scaled_embed, MARGIN=2, FUN = function(x) all(x==0)) -->
+<!-- table(vec_allZero) -->
+<!-- # FALSE  -->
+<!-- #   107  -->
+<!-- ``` -->
 
-gerhard 2018 wgcna modules
+<!-- ```{r} -->
+<!-- if (any(vec_allZero)) { -->
+<!--   # get rid of all-zero columns, i.e. modules where none of the genes were matched in the bulk expression data -->
+<!--   mat_scaled_embed <- mat_scaled_embed[,!apply(X=mat_scaled_embed, MARGIN=2, FUN = function(x) all(x==0))] -->
 
-```{r}
-dt_geneMod_gerhard2018_merged$module_pres %>% unique -> vec_mods_gerhard2018
-
-vec_mods_gerhard2018<- vec_mods_gerhard2018[!is.na(vec_mods_gerhard2018) & nchar(vec_mods_gerhard2018)>0]
-
-mat_embed_gerhard2018 <- sapply(vec_mods_gerhard2018, function(mod) {
-
-  # get gene weights
-  condition = quote(dt_geneMod_gerhard2018_merged[[colModule]]==mod)
-  vec_pkMs <- dt_geneMod_gerhard2018_merged[eval(condition), pkMs,]
-
-  # normalize module gene weights to sum to 1
-  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
-
-  # find corresponding rows of the expression matrix
-  vec_idxRow <- match(dt_geneMod_gerhard2018_merged[eval(condition), ..colGeneNames, ][[1]], dt_datExpr[,gene])
-
-  # filter out mis-matches
-  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
-  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
-
-  # compute weighted sum of normalized expression
-  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
-
-  vec_pkMs %*% mat_sub
-
-})
-
-rownames(mat_embed_gerhard2018) <- colnames(dt_datExpr)[-1]
-
-mat_embed_gerhard2018[0:4,0:4]
-```
-
-sc wgcna modules
-
-```{r}
-
-dt_geneMod_perslab_merged$module_pres %>% unique -> vec_mods_perslab
-
-vec_mods_perslab<- vec_mods_perslab[!is.na(vec_mods_perslab) & nchar(vec_mods_perslab)>0]
-
-mat_embed_perslab <- sapply(vec_mods_perslab, function(mod) {
-
-  # get gene weights
-  condition = quote(dt_geneMod_perslab_merged[[colModule]]==mod)
-  vec_pkMs <- dt_geneMod_perslab_merged[eval(condition), pkMs,]
-
-  # normalize module gene weights to sum to 1
-  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
-
-  # find corresponding rows of the expression matrix
-  vec_idxRow <- match(dt_geneMod_perslab_merged[eval(condition), ..colGeneNames, ][[1]], dt_datExpr[,gene])
-
-  # filter out mis-matches
-  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
-  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
-
-  # compute weighted sum of normalized expression
-  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
-
-  vec_pkMs %*% mat_sub
-
-})
-
-rownames(mat_embed_perslab) <- colnames(dt_datExpr)[-1]
-
-mat_embed_perslab[0:4,0:4]
-```
-
-```{r}
-mat_embed <- cbind(mat_embed_gerhard2018, mat_embed_perslab)
-```
-
-# Are any modules zero in all samples (because the genes aren't found in the bulk dataset) ? 
-
-```{r}
-vec_allZero <- apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))
-table(vec_allZero)
-# FALSE
-#  69
-```
-
-```{r}
-
-if (any(vec_allZero)) {
-  # get rid of all-zero columns, i.e. modules where none of the genes were matched in the bulk expression data
-  mat_embed <- mat_embed[,!apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))]
-
-  dim(mat_embed)
-}
-```
-
-## scale embeddings to z-scores
-
-```{r}
-mat_embed_scaled = scale(mat_embed)
-```
+<!--   dim(mat_scaled_embed) -->
+<!-- } -->
+<!-- ``` -->
 
 ### combine embeddings and metadata
 
-```{r}
-list_dt_metadata = list(dt_metadata_steatosis, dt_metadata_lobinflam, dt_metadata_fibrosis, dt_metadata_lobinflam_vs_fibrosis)
+lm can't deal with dashes in module names so replace with underscore
 
-names(list_dt_metadata) <- c("steatosis", "lob_inflam", "fibrosis", "fibrosis_vs_lob_inflam")
+```{r}
+colnames(mat_scaled_embed) <- gsub("-","_",colnames(mat_scaled_embed))
+```
+
+<!-- ```{r} -->
+<!-- colnames(mat_unscaled_embed) <- gsub("-","_",colnames(mat_unscaled_embed)) -->
+<!-- ``` -->
+
+```{r}
+list_dt_metadata = list(dt_metadata_steatosis, dt_metadata_lobinflam, dt_metadata_fibrosis, dt_metadata_lobinflam_vs_fibrosis, dt_metadata_fibrosis_severity)
+
+names(list_dt_metadata) <- c("steatosis", "lob_inflam", "fibrosis", "fibrosis_vs_lob_inflam", "fibrosis_severity")
 ```
 
 ```{r}
-list_dt_model_sub <- lapply(list_dt_metadata, function(dt_sub) {
-  data.table(dt_sub, mat_embed_scaled[dt_sub$run_accession,])
+list_dt_model_sub <- lapply(names(list_dt_metadata), function(condition) {
+  dt_metadata_tmp = list_dt_metadata[[condition]]
+  
+  dt_tmp = data.frame(dt_metadata_tmp, mat_scaled_embed[ dt_metadata_tmp$run_accession,])
+  # if (condition %in% c("steatosis", "lob_inflam")) {
+  #   dt_tmp$condition <- as.numeric(dt_tmp$condition)
+  # } else {
+  #   dt_tmp$condition <- as.factor(dt_tmp$condition)
+  # }
+  # dt_tmp[,SEX := dt_metadata_tmp$SEX]
+  # dt_tmp[,BMI_surg := dt_metadata_tmp$BMI_surg]
+  # dt_tmp[,Age := dt_metadata_tmp$Age]
+  # dt_tmp[,condition := dt_metadata_tmp$condition]
+  #tmp = quote(colnames(mat_scaled_embed))
+  #dt_tmp[, eval(tmp)] <- dt_tmp[, lapply(.SD, as.numeric)] #.SDcols=colnames(mat_scaled_embed)]
+  return(dt_tmp)
 })
-names(list_dt_model_sub) <- c("steatosis", "lob_inflam", "fibrosis", "fibrosis_vs_lob_inflam")
+names(list_dt_model_sub) <- names(list_dt_metadata)
+```
+
+<!-- ```{r} -->
+<!-- list_dt_model_sub_unscaled <- lapply(list_dt_metadata, function(dt_sub) { -->
+<!--   data.table(dt_sub, mat_unscaled_embed[dt_sub$run_accession,]) -->
+<!-- }) -->
+<!-- names(list_dt_model_sub_unscaled) <- names(list_dt_metadata) -->
+<!-- ``` -->
+
+plot the module expression by condition (not taking into account sex, age, BMI)
+
+```{r}
+dev.off()
+```
+
+```{r}
+ggplot(data=list_dt_model_sub[["fibrosis"]], mapping = aes(x=data, y=Hepatocytes_4, fill=condition)) + 
+  geom_violin(position = position_dodge(width = 1)) + geom_jitter(position = position_jitterdodge(seed = 1, dodge.width = 1))
+  
+```
+
+```{r}
+ggplot(data=list_dt_model_sub[["fibrosis"]], mapping = aes(x=data, y=Hepatocytes_8, fill=condition)) + 
+ geom_violin(position = position_dodge(width = 1)) + geom_jitter(position = position_jitterdodge(seed = 1, dodge.width = 1))
+
 ```
 
 run linear models 
 
+scaled 
+
 ```{r}
-list_list_tbl_regr <- lapply(names(list_dt_model_sub), function(outcome) {
-  dt_model_tmp <- list_dt_model_sub[[outcome]]
-  dt_model_tmp$SEX <- factor(dt_model_tmp$SEX)
-  lapply(colnames(mat_embed_scaled), function(module) {
-    formula_tmp <- formula(paste0(module, "~ SEX + BMI_surg + Age + condition"))
-    ##mat_model <- model.matrix(object = formula_tmp, data=dt_model_tmp)
-    regr<-lm(formula = formula_tmp, dt_model_tmp)
-    regr %>% broom::tidy() 
-  }) -> list_tbl_tmp 
-  names(list_tbl_tmp) = colnames(mat_embed_scaled)
-  return(list_tbl_tmp)
+set.seed(randomSeed)
+
+system.time(list_list_bootOut <- lapply(names(list_dt_model_sub), function(condition) {
+  print(paste0("condition: ", condition))
+  
+  dt_model_tmp <- setDF(list_dt_model_sub[[condition]])
+  #dt_model_tmp$SEX <- factor(dt_model_tmp$SEX)
+  lapply(colnames(mat_scaled_embed), function(module) {
+    
+    print(paste0("module: ", module))
+    
+    if (all(is.na(mat_scaled_embed[,module]))) {
+      return(NA) 
+    } else {
+    fnc_stat = function(data,indices) {
+         lm(
+           data = data[indices,], 
+           formula = formula(paste0(module, "~ SEX + BMI_surg + Age + condition"))) %>% coefficients()
+    }
+    bootOut = "error"
+    class(bootOut) = "try-error"
+    while (class(bootOut)=="try-error") {
+      boot_out = try({
+        set.seed(randomSeed+1)
+        bootOut <- boot::boot(data=dt_model_tmp, 
+                               statistic = fnc_stat,
+                               R = R,
+                               sim = "ordinary",
+                               stype = "i",
+                               parallel = getOption("boot.parallel"),
+                               ncpus = getOption("boot.ncpus")) 
+      })
+    }
+    return(bootOut)  
+    }
+  }) -> list_bootOut 
+  names(list_bootOut) = colnames(mat_scaled_embed)
+  return(list_bootOut)
+  })
+)
+
+names(list_list_bootOut) <- names(list_dt_model_sub)
+```
+
+<!-- look at cook's distances  -->
+
+<!-- ```{r} -->
+<!-- regr <- list_list_regr[["fibrosis"]][[1]] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- regr_inflm = influence.measures(model = regr) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- summary(regr_inflm) -->
+<!-- ``` -->
+
+<!-- look at the studentized model residuals (not omitting each observation) -->
+
+<!-- ```{r} -->
+
+<!-- # n is the same within a condition -->
+<!-- n <- length(list_list_regr[["fibrosis"]][[1]]$residuals) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- vec_sigma_del = sapply(1:n, function(i) { -->
+<!--   regr$fitted.values -->
+<!-- }) -->
+
+<!--   summary(regr)$residuals/summary(regr)$sigma -->
+
+<!-- stats::qqplot(y = , x=qnorm(p=seq(from=0.01, to=1, by=1/n)), xlim=c(-3,3), ylim=c(-3,3)) -->
+
+<!-- abline(coef=c(0,1)) -->
+<!-- ``` -->
+
+<!-- uh uh. For the scaled (not log) embeddings we see an inverse sigmoid (overshooting Normality at low and high quantiles, suggesting that the model is skewed by a subset) -->
+
+extract coefficient tables 
+
+get p-value, std error and confidence intervals from the $t
+
+```{r}
+list_dt_bootOut_stats <- lapply(names(list_list_bootOut), function(condition) {
+  list_bootOut = list_list_bootOut[[condition]]
+  mat_bootOut_stats <- t(sapply(names(list_bootOut), function(module) {
+    bootOut = list_bootOut[[module]]
+    vec_out = tryCatch({
+      mat_boot_replicates = bootOut$t
+      colnames(mat_boot_replicates) = names(bootOut$t0)
+      idx_col = grep("condition",names(bootOut$t0))
+      # compute bootstrap statistics
+      bootBias = mean(mat_boot_replicates[,idx_col]) - bootOut$t0[idx_col]
+      bootMean = mean(mat_boot_replicates[,idx_col]) 
+      bootSE = sd(mat_boot_replicates[,idx_col])
+      bootMed = median(mat_boot_replicates[,idx_col])
+      
+      # compute bootstrap percentile intervals 
+      bootciOut = boot.ci(bootOut, index = 5)
+      # idx_lower = round((R+1)*0.025,0)
+      # idx_upper = round((R+1)*0.975,0)
+      # confInt_lower_boot = sort(mat_boot_replicates[,idx_col])[idx_lower]
+      # confInt_upper_boot = sort(mat_boot_replicates[,idx_col])[idx_upper]
+      confInt_lower_percentile = bootciOut$percent[4]
+      confInt_upper_percentile = bootciOut$percent[5]
+      # compute Normal-theory intervals
+      # confInt_lower_norm = qnorm(p = 0.025, mean = bootMean, sd = bootSE, lower.tail = T)
+      # confInt_upper_norm = qnorm(p = 0.975, mean = bootMean, sd = bootSE, lower.tail = T)
+      confInt_lower_norm = bootciOut$normal[2]
+      confInt_upper_norm = bootciOut$normal[3]
+      
+      c("estimate_original"=bootOut$t0[idx_col],
+       #"bootBias"=bootBias,
+       "bootSE"=bootSE,
+       "estimate_bootMean"=bootMean,
+       "estimate_bootMed" = bootMed,
+       "confInt_lower_percentile"=confInt_lower_percentile,
+       "confInt_upper_percentile"=confInt_upper_percentile,
+       "confInt_lower_norm"=confInt_lower_norm,
+       "confInt_upper_norm"=confInt_upper_norm,
+       "p.value_percentile" = max(0.5,min(sum(mat_boot_replicates[,idx_col]>0), sum(mat_boot_replicates[,idx_col]<0)))*2/R,
+       "p.value_norm" = pnorm(q=abs(bootMean), mean=0, sd=bootSE, lower.tail = F)*2)
+    }, error = function(err) {
+      warning(paste0(module, ": ", err))
+      c("estimate_original"=NA_real_,
+       #"bootBias"=NA_real_,
+       "bootSE"=NA_real_,
+       "estimate_bootMean"=NA_real_,
+       "estimate_bootMed" = NA_real_,
+       "confInt_lower_percentile"=NA_real_,
+       "confInt_upper_percentile"=NA_real_,
+       "confInt_lower_norm"=NA_real_,
+       "confInt_upper_norm"=NA_real_,
+        "p.value_percentile" = NA_real_,
+       "p.value_norm"=NA_real_)
+      })
+    
+  }))
+  dt_bootOut_stats = data.table("condition"=condition, 
+                                "module"=names(list_bootOut), 
+                                mat_bootOut_stats)
+  
+  #dt_bootOut_stats[,p.value_percent_BH:=p.adjust(p.value_percent,method = params$pAdjMethod)]
+  #dt_bootOut_stats[,p.value_born_BH:=p.adjust(p.value_norm, method = params$pAdjMethod)]
+  colnames(dt_bootOut_stats)[3]="estimate_original" # for some reason, it appends ".condition" to these column names
+  return(dt_bootOut_stats)
 })
 
-names(list_list_tbl_regr) <- names(list_dt_model_sub)
+names(list_dt_bootOut_stats) <- names(list_dt_model_sub)
+
+dt_bootOut_stats = data.table::rbindlist(list_dt_bootOut_stats)
+
+#dt_bootOut_stats[,module := gsub("_","-", module)]
 ```
 
-extract coefficients for the condition regressors 
+<!-- ```{r} -->
+<!-- list_list_tbl_regr <- lapply(list_list_regr, function(list_regr) { -->
+<!--   lapply(list_regr, function(regr) { -->
+<!--     regr %>% broom::tidy()  -->
+<!--   }) -> list_tbl_tmp  -->
+<!--   names(list_tbl_tmp) = colnames(mat_scaled_embed) -->
+<!--   return(list_tbl_tmp) -->
+<!-- }) -->
 
-```{r}
-lapply(names(list_list_tbl_regr), function(condition) {
-  list_tbl_regr = list_list_tbl_regr[[condition]]
-  mat_out <- sapply(list_tbl_regr, function(tbl_regr) {
-    tbl_regr[tbl_regr$term=="condition",colnames(tbl_regr) %in% c("estimate","std.error","statistic","p.value")] 
-  }) %>% t
-  data.table("module"= rownames(mat_out), "condition"=condition, mat_out)
-}) -> list_dt_condition_coef
+<!-- names(list_list_tbl_regr) <- names(list_dt_model_sub) -->
+<!-- ``` -->
 
-names(list_dt_condition_coef) <- names(list_list_tbl_regr)
-```
+<!-- ```{r} -->
 
-```{r}
-list_dt_condition_coef[[1]][p.adjust(p=p.value,method=params$pAdjMethod) %>% '<'(params$pValThreshold)]
-```
+<!-- lapply(names(list_list_tbl_regr), function(condition) { -->
+<!--   list_tbl_regr = list_list_tbl_regr[[condition]] -->
+<!--   mat_out <- sapply(list_tbl_regr, function(tbl_regr) { -->
+<!--     tbl_regr[grep("condition",tbl_regr$term),colnames(tbl_regr) %in% c("estimate","std.error","statistic","p.value")]  -->
+<!--   }) %>% t -->
+<!--   data.table("module"= rownames(mat_out), "condition"=condition, mat_out) -->
+<!-- }) -> list_dt_condition_coef -->
 
-```{r}
-list_dt_condition_coef[[1]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[1]]$p.value,method=params$pAdjMethod)
-```
+<!-- names(list_dt_condition_coef) <- names(list_list_tbl_regr) -->
+<!-- ``` -->
 
-```{r}
-list_dt_condition_coef[[2]][p.adjust(p=p.value,method=params$pAdjMethod) %>% '<'(params$pValThreshold)]
-```
 
-```{r}
-list_dt_condition_coef[[2]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[2]]$p.value,method=params$pAdjMethod)
-```
+<!-- ```{r} -->
 
-```{r}
-list_dt_condition_coef[[3]][p.adjust(p=p.value,method=params$pAdjMethod) %>% '<'(params$pValThreshold)]
-```
+<!-- lapply(names(list_list_boot_summary), function(condition) { -->
+<!--   list_boot_summary = list_list_boot_summary[[condition]] -->
+<!--   mat_out <- sapply(list_boot_summary, function(boot_summary) { -->
+<!--     boot_summary[grep("condition",tbl_regr$term),colnames(tbl_regr) %in% c("estimate","std.error","statistic","p.value")]  -->
+<!--   }) %>% t -->
+<!--   data.table("module"= rownames(mat_out), "condition"=condition, mat_out) -->
+<!-- }) -> list_dt_condition_coef -->
 
-```{r}
-list_dt_condition_coef[[3]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[3]]$p.value,method=params$pAdjMethod)
-```
+<!-- names(list_dt_condition_coef) <- names(list_list_tbl_regr) -->
+<!-- ``` -->
 
-```{r}
-list_dt_condition_coef[[4]][p.adjust(p=p.value,method=params$pAdjMethod) %>% '<'(params$pValThreshold)]
-```
+<!-- ```{r} -->
 
-```{r}
-list_dt_condition_coef[[4]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[4]]$p.value,method=params$pAdjMethod)
-```
+<!-- #adjust p-values -->
+<!-- list_dt_condition_coef[[1]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[1]]$p.value,method=params$pAdjMethod) -->
 
-### filter modules in dt_geneMod
+<!-- list_dt_condition_coef[[2]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[2]]$p.value,method=params$pAdjMethod) -->
 
-perslab
+<!-- list_dt_condition_coef[[3]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[3]]$p.value,method=params$pAdjMethod) -->
 
-```{r}
-lapply(list_dt_condition_coef, function(dt) dt$module[dt$p.value %>% p.adjust(p=.,method=params$pAdjMethod) %>% '<'(params$pValThreshold)]) %>% Reduce(x=., f=function(vec1,vec2)c(vec1,vec2))  %>% unique -> vec_mods_assoc
-```
+<!-- list_dt_condition_coef[[4]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[4]]$p.value,method=params$pAdjMethod) -->
 
-```{r}
-dt_geneMod_perslab_merged[["cell_cluster_assoc"]] <- ifelse(dt_geneMod_perslab_merged[["module_pres"]] %in% vec_mods_assoc,dt_geneMod_perslab_merged[["cell_cluster_pres"]], NA_character_)
-dt_geneMod_perslab_merged[["module_assoc"]] <- ifelse(dt_geneMod_perslab_merged[["module_pres"]] %in% vec_mods_assoc,dt_geneMod_perslab_merged[["module_pres"]], NA_character_)
-```
+<!-- list_dt_condition_coef[[5]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef[[5]]$p.value,method=params$pAdjMethod) -->
+<!-- ``` -->
 
-```{r}
-dt_geneMod_gerhard2018_merged[["cell_cluster_assoc"]] <- ifelse(dt_geneMod_gerhard2018_merged[["module_pres"]] %in% vec_mods_assoc,dt_geneMod_gerhard2018_merged[["cell_cluster_pres"]], NA_character_)
-dt_geneMod_gerhard2018_merged[["module_assoc"]] <- ifelse(dt_geneMod_gerhard2018_merged[["module_pres"]] %in% vec_mods_assoc,dt_geneMod_gerhard2018_merged[["module_pres"]], NA_character_)
-```
+<!-- examine the model residuals -->
+
+
+
+
+<!-- unscaled  -->
+
+<!-- ```{r} -->
+<!-- list_list_tbl_regr_unscaled <- lapply(names(list_dt_model_sub_unscaled), function(outcome) { -->
+<!--   dt_model_tmp <- list_dt_model_sub_unscaled[[outcome]] -->
+<!--   dt_model_tmp$SEX <- factor(dt_model_tmp$SEX) -->
+<!--   lapply(colnames(mat_unscaled_embed), function(module) { -->
+<!--     formula_tmp <- formula(paste0(module, "~ SEX + BMI_surg + Age + condition")) -->
+<!--     ##mat_model <- model.matrix(object = formula_tmp, data=dt_model_tmp) -->
+<!--     regr<-lm(formula = formula_tmp, dt_model_tmp) -->
+<!--     regr %>% broom::tidy()  -->
+<!--   }) -> list_tbl_tmp  -->
+<!--   names(list_tbl_tmp) = colnames(mat_unscaled_embed) -->
+<!--   return(list_tbl_tmp) -->
+<!-- }) -->
+
+<!-- names(list_list_tbl_regr_unscaled) <- names(list_dt_model_sub_unscaled) -->
+
+<!-- #extract coefficients for the condition regressors  -->
+
+<!-- lapply(names(list_list_tbl_regr_unscaled), function(condition) { -->
+<!--   list_tbl_regr = list_list_tbl_regr_unscaled[[condition]] -->
+<!--   mat_out <- sapply(list_tbl_regr, function(tbl_regr) { -->
+<!--     tbl_regr[grep("condition",tbl_regr$term),colnames(tbl_regr) %in% c("estimate","std.error","statistic","p.value")]  -->
+<!--   }) %>% t -->
+<!--   data.table("module"= rownames(mat_out), "condition"=condition, mat_out) -->
+<!-- }) -> list_dt_condition_coef_unscaled -->
+
+<!-- names(list_dt_condition_coef_unscaled) <- names(list_list_tbl_regr_unscaled) -->
+
+<!-- #adjust p-values -->
+<!-- list_dt_condition_coef_unscaled[[1]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef_unscaled[[1]]$p.value,method=params$pAdjMethod) -->
+
+<!-- list_dt_condition_coef_unscaled[[2]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef_unscaled[[2]]$p.value,method=params$pAdjMethod) -->
+
+<!-- list_dt_condition_coef_unscaled[[3]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef_unscaled[[3]]$p.value,method=params$pAdjMethod) -->
+
+<!-- list_dt_condition_coef_unscaled[[4]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef_unscaled[[4]]$p.value,method=params$pAdjMethod) -->
+
+<!-- list_dt_condition_coef_unscaled[[5]][[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=list_dt_condition_coef_unscaled[[5]]$p.value,method=params$pAdjMethod) -->
+<!-- ``` -->
+
+<!-- look at results -->
+
+<!-- scaled -->
+
+<!-- ```{r} -->
+<!-- sum(list_dt_condition_coef[["steatosis"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- #[1] 0 -->
+<!-- sum(list_dt_condition_coef[["lob_inflam"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- #[1] 78 -->
+<!-- sum(list_dt_condition_coef[["fibrosis"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- #[1] 69 -->
+<!-- sum(list_dt_condition_coef[["fibrosis_vs_lob_inflam"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- # [1] 30 -->
+<!-- sum(list_dt_condition_coef[["fibrosis_severity"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- #[1] 0 -->
+<!-- ``` -->
+
+<!-- unscaled -->
+
+<!-- ```{r} -->
+<!-- sum(list_dt_condition_coef_unscaled[["steatosis"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- #[1] 0 -->
+<!-- sum(list_dt_condition_coef_unscaled[["lob_inflam"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- #[1] 83 -->
+<!-- sum(list_dt_condition_coef_unscaled[["fibrosis"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- #[1] 77 -->
+<!-- sum(list_dt_condition_coef_unscaled[["fibrosis_vs_lob_inflam"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- # [1] 39 -->
+<!-- sum(list_dt_condition_coef_unscaled[["fibrosis_severity"]][[paste0("p.value_",params$pAdjMethod)]]< 0.05) -->
+<!-- #[1] 0 -->
+<!-- ``` -->
+
+<!-- compare scaled and unscaled embedding association estimates -->
+
+<!-- ```{r} -->
+<!-- cor(as.numeric(list_dt_condition_coef_unscaled[["fibrosis"]]$estimate), as.numeric(list_dt_condition_coef[["fibrosis"]]$estimate)) -->
+<!-- #[1] 0.1755063 -->
+<!-- ``` -->
+
+<!-- compare past fibrosis results -->
+
+<!-- ```{r} -->
+<!-- dt_condition_coef_fibrosis_200325 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_seurat_7_sc_bulk_modules_fibrosis_association_in_gerhard2018_200325.csv") -->
+
+<!-- dt_condition_coef_fibrosis_200511 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_seurat_7_sc_bulk_modules_scaled_fibrosis_association_in_gerhard2018_200511.csv") -->
+
+<!-- dt_condition_coef_fibrosis_200911 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_seurat_7_sc_bulk_modules_scaled_fibrosis_association_in_moylan2013_200911.csv") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- all.equal(dt_condition_coef_fibrosis_200325$module, dt_condition_coef_fibrosis_200511$module) -->
+<!-- # [1] TRUE -->
+<!-- all.equal(dt_condition_coef_fibrosis_200511$module, dt_condition_coef_fibrosis_200911$module) -->
+<!-- # [1] TRUE -->
+<!-- ``` -->
+
+<!-- compare previous results  -->
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_coef_fibrosis_200325$estimate, dt_condition_coef_fibrosis_200511$estimate) # unscaled vs scaled and centered -->
+<!-- # [1] 0.344431 -->
+<!-- cor(dt_condition_coef_fibrosis_200511$estimate, dt_condition_coef_fibrosis_200911$estimate) # scaled and centered vs log2 -->
+<!-- # [1] 0.4491132 -->
+<!-- cor(dt_condition_coef_fibrosis_200325$estimate, dt_condition_coef_fibrosis_200911$estimate) # unscaled vs log2 -->
+<!-- # [1] 0.2738659 -->
+<!-- ``` -->
+
+<!-- compare old vs newest -->
+
+<!-- ```{r} -->
+<!-- dt_new_perslab_mods = list_dt_condition_coef[["fibrosis"]][!grepl("moylan|gerhard", module)] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_dict = openxlsx::read.xlsx("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_seurat_7_wgcna3_module_renamed_dict.xlsx") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_new_perslab_mods$module_original = dt_dict$original[match(dt_new_perslab_mods$module, gsub("-","_",dt_dict$new))] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- idx = match(dt_new_perslab_mods$module_original, dt_condition_coef_fibrosis_200325$module) -->
+<!-- idx_notNA = idx[!is.na(idx)] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- all.equal(dt_new_perslab_mods$module_original[!is.na(idx)],dt_condition_coef_fibrosis_200325$module[idx_notNA]) -->
+<!-- # [1] TRUE -->
+<!-- ``` -->
+
+<!-- ```{R} -->
+<!-- cor(as.numeric(dt_new_perslab_mods$estimate[!is.na(idx)]),dt_condition_coef_fibrosis_200325$estimate[idx_notNA]) -->
+<!-- # [1] 0.1029858 -->
+
+<!-- cor(as.numeric(dt_new_perslab_mods$estimate[!is.na(idx)]),dt_condition_coef_fibrosis_200511$estimate[idx_notNA]) -->
+<!-- # [1] 0.5416771  -->
+
+<!-- cor(as.numeric(dt_new_perslab_mods$estimate[!is.na(idx)]),dt_condition_coef_fibrosis_200911$estimate[idx_notNA]) -->
+<!-- # [1] 0.07327647 -->
+<!-- ``` -->
+
+<!-- so scaling leads to very different results compared to normalized, and also taking log changes results again. -->
+
+<!-- compare results to moylan -->
+
+<!-- ```{r} -->
+<!-- dt_condition_moylan = fread(paste0(dirWGCNA_tables, prefixData, "_mod_fibrosis_assoc_in_moylan2013_201012.csv")) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- all.equal(dt_condition_moylan$module, list_dt_condition_coef[["fibrosis"]]$module) -->
+<!-- # [1] TRUE -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_moylan$estimate, as.numeric(list_dt_condition_coef[["fibrosis"]]$estimate)) -->
+<!-- # [1] 0.1607969 -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_moylan$estimate, as.numeric(list_dt_condition_coef_unscaled[["fibrosis"]]$estimate)) -->
+<!-- ``` -->
+
+<!-- old gerhard results versus new Moylan (where was the high correspondance?) -->
+
+<!-- ```{r} -->
+<!-- dt_condition_moylan_perslab_mods = dt_condition_moylan[!grepl("moylan|gerhard", module)] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_condition_moylan_perslab_mods$module_original = dt_dict$original[match(dt_condition_moylan_perslab_mods$module, gsub("-","_",dt_dict$new))] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- idx = match(dt_condition_moylan_perslab_mods$module_original, dt_condition_coef_fibrosis_200325$module) -->
+<!-- idx_notNA = idx[!is.na(idx)] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- all.equal(dt_condition_moylan_perslab_mods$module_original[!is.na(idx)],dt_condition_coef_fibrosis_200325$module[idx_notNA]) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_moylan_perslab_mods$estimate[!is.na(idx)],dt_condition_coef_fibrosis_200325$estimate[idx_notNA]) -->
+<!-- # [1] 0.05473216 -->
+<!-- ``` -->
+
+<!-- so the oldest gerhard results (unscaled?) don't match moylan at all. -->
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_moylan_perslab_mods$estimate[!is.na(idx)],dt_condition_coef_fibrosis_200511$estimate[idx_notNA]) -->
+<!-- # [1] 0.2637417 -->
+<!-- ``` -->
+
+<!-- there is a small correlation between moylan and the scaled? results -->
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_moylan_perslab_mods$estimate[!is.na(idx)],dt_condition_coef_fibrosis_200911$estimate[idx_notNA]) -->
+<!-- # 0.8042089 -->
+<!-- ``` -->
+
+<!-- very high correspondance when we use log2. Let's confirm this. -->
+
+<!-- ### annotate modules in dt_geneMod -->
+
+<!-- perslab -->
+
+<!-- ```{r} -->
+<!-- vec_mods_fibrosis = list_dt_condition_coef[["fibrosis"]][p.value_BH<0.05,module] -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- dt_geneMod_perslab[["cell_cluster_fibrosis_gerhard2018"]] <- ifelse(dt_geneMod_perslab[[colModule]] %in% vec_mods_fibrosis, dt_geneMod_perslab[[colCellCluster]], NA_character_) -->
+
+<!-- dt_geneMod_perslab[["module_fibrosis_gerhard2018"]] <- ifelse(dt_geneMod_perslab[[colModule]] %in% vec_mods_fibrosis ,dt_geneMod_perslab[[colModule]], NA_character_) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- dt_geneMod_gerhard2018[["cell_cluster_fibrosis_gerhard2018"]] <- ifelse(dt_geneMod_gerhard2018[[colModule]] %in% vec_mods_fibrosis, dt_geneMod_gerhard2018[[colCellCluster]], NA_character_) -->
+
+<!-- dt_geneMod_gerhard2018[["module_fibrosis_gerhard2018"]] <- ifelse(dt_geneMod_gerhard2018[[colModule]] %in% vec_mods_fibrosis, dt_geneMod_gerhard2018[[colModule]], NA_character_) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- dt_geneMod_moylan2013[["cell_cluster_fibrosis_gerhard2018"]] <- ifelse(dt_geneMod_moylan2013[[colModule]] %in% vec_mods_fibrosis, dt_geneMod_moylan2013[[colCellCluster]], NA_character_) -->
+
+<!-- dt_geneMod_moylan2013[["module_fibrosis_gerhard2018"]] <- ifelse(dt_geneMod_moylan2013[[colModule]] %in% vec_mods_fibrosis, dt_geneMod_moylan2013[[colModule]], NA_character_) -->
+<!-- ``` -->
 
 ## write out results
 
 ```{r}
-for (name in names(list_dt_condition_coef)) {
-  
-  fwrite(x=list_dt_condition_coef[[name]], file=paste0(dirWGCNA_tables, prefixData, "_sc_bulk_modules_scaled_", name, "_association_in_gerhard2018", flagDate,".csv"))
-  openxlsx::write.xlsx(x=list_dt_condition_coef[[name]],file = paste0(dirWGCNA_tables, prefixData, "_sc_bulk_modules_scaled_", name, "_association_in_gerhard2018_", flagDate,".xlsx"))
-  
-}
+fwrite(x=dt_bootOut_stats, file=paste0(dirWGCNA_tables, prefixData, "_mod_assoc_in_gerhard2018_", flagDate,".csv"))
+
+openxlsx::write.xlsx(dt_bootOut_stats, file=paste0(dirWGCNA_tables, prefixData, "_mod_assoc_in_gerhard2018_", flagDate,".xlsx"))
 ```
 
-```{r}
-fwrite(dt_geneMod_gerhard2018_merged, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
-```
 
-```{r}
-fwrite(dt_geneMod_perslab_merged, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz", compress="gzip")
-```
+<!-- ```{r} -->
+<!-- for (name in names(list_dt_condition_coef)) { -->
+
+<!--   fwrite(x=list_dt_condition_coef[[name]], file=paste0(dirWGCNA_tables, prefixData, "_mod_", name, "_assoc_in_gerhard2018_", flagDate,".csv")) -->
+<!--   openxlsx::write.xlsx(x=list_dt_condition_coef[[name]],file = paste0(dirWGCNA_tables, prefixData, "_mod_", name, "_assoc_in_gerhard2018_", flagDate,".xlsx")) -->
+
+<!-- } -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- fwrite(dt_geneMod_perslab, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz", compress="gzip") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- fwrite(dt_geneMod_gerhard2018, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz", compress="gzip") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- fwrite(dt_geneMod_moylan2013, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.csv.gz", compress="gzip") -->
+<!-- ``` -->
 
 ## Additional association analyses
 
@@ -420,17 +800,6 @@ list_list_tbl_regr_genes <- lapply(list_dt_metadata, function(dt_metadata_sub) {
 names(list_list_tbl_regr_genes) <- names(list_dt_metadata)
 ```
 
-
-
-
-
-
-
-
-
-
-
-
 ```{r}
 lapply(vec_genes, function(gene) {
   formula_tmp <- formula(paste0(gene, "~ fibrosis"))
@@ -451,3 +820,7 @@ mat_out <- sapply(list_tbl_regr, function(tbl_regr) {
 
 dt_coef = data.table("gene"= rownames(mat_out), "condition"="fibrosis", mat_out)
 ```
+
+next: 
+
+liver_module_sc_merge_to_metamodules.Rmd

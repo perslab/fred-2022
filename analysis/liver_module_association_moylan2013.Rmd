@@ -1,5 +1,5 @@
 ---
-title: 'Liver - gene network metadata association analysis in Moylan 2013 microarray data'
+title: 'Liver - gene network metadata association analysis in Moylan 2013 microarray data (new)'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -9,6 +9,7 @@ params:
   date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
   randomSeed: !r 12345
   pValThreshold: !r 0.05
+  pAdjMethod: "BH"
 # output:
 #   html_notebook:
 #     df_print: paged
@@ -24,31 +25,33 @@ params:
 #     toc_float: yes
 ---
 
+previous: liver_module_embed_in_moylan2013.Rmd
+
 # Setup
 
 ## Load packages
 
 ```{r}
+#ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
+#library("Seurat")
+
 library("data.table")
 library("Matrix")
 library("parallel")
 #library("tidyverse")
 library("here")
-#library("boot")
+# library("boot")
 library("magrittr")
-#library("AUCell")
-```
+# library("AUCell")
+# library("car")
+library("boot")
+# source utility functions
 
-## source utility functions
-
-```{r}
 source(here("/perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
-```
 
-## Set options
+# Set options
 
-```{r}
 options(stringsAsFactors = F, 
         use="pairwise.complete.obs", 
         warn=1, 
@@ -59,6 +62,8 @@ options(stringsAsFactors = F,
         ) 
 
 RNGkind("L'Ecuyer-CMRG")
+
+R=1e3-1
 # ?boot
 # For most of the boot methods the resampling is done in the master process, but not if simple = TRUE nor sim = "parametric". In those cases (or where statistic itself uses random numbers), more care is needed if the results need to be reproducible. Resampling is done in the worker processes by censboot(sim = "wierd") and by most of the schemes in tsboot (the exceptions being sim == "fixed" and sim == "geom" with the default ran.gen).
 # 
@@ -68,32 +73,18 @@ RNGkind("L'Ecuyer-CMRG")
 setDTthreads(threads = NULL, 
              restore_after_fork = NULL)
 getDTthreads()
-```
 
-## Set constants
+# Set constants
 
-```{r}
 randomSeed = 12345
 set.seed(randomSeed)
-
-pAdjustMethod = "BH"
-pValThreshold = 0.05#params$pValThreshold
-
-nRep = 10000 # bootstrap replicates
-# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
-
 flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
-```
 
-
-generic project constants 
-
-```{r}
+# generic project constants 
 
 prefixData = "liver_perslab_int"
 prefixRun = "seurat_7"
-#prefixOut <- "SCT"
-prefixOut <- "moylan2013_wgcna_assoc"
+prefixRun_WGCNA = "wgcna3"
 
 dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
 dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
@@ -102,24 +93,51 @@ dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
 colGeneWeights = "pkMs"
 colGeneNames = "genes"
-colModule = "module_merged"
-colCellCluster = "cell_cluster_merged"
+colModule = "module_renamed"
+colCellCluster = "cell_cluster_pres"
 # naming convention:
 # <prefixData>_<prefixRun>_<prefixOut>_<outputType>_<params>_<params>_..._<date>.pdf
 
 ```
 
-## load data
+load embeddings
+this includes sc and bulk modules
 
 ```{r}
-dt_datExpr <- fread(here("data", "moylan2013.norm.expr.csv.gz"))
+# df_embed = fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mod_embed_gerhard2018.csv.gz") %>% setDF
+df_embed = fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mat_scaled_embed_moylan2013.csv.gz") %>% setDF
+
+mat_scaled_embed = df_embed[,-1] %>% as.matrix
+rownames(mat_scaled_embed) = df_embed$GEO_accession
+mat_scaled_embed[0:4,0:4]
 ```
 
-convert columns to numeric 
+<!-- compare distribution of module activity to gerhard -->
+
+<!-- ```{r} -->
+<!-- df_embed_g = fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mat_scaled_embed_gerhard2018.csv.gz") %>% setDF -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- mat_embed_g = df_embed_g[,-1] %>% as.matrix -->
+<!-- rownames(mat_embed_g) = df_embed_g$run_accession -->
+<!-- mat_embed_g[0:4,0:4] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- hist(mat_embed[,"Cholangiocytes_3"], breaks = 20) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- hist(mat_embed_g[,"Cholangiocytes_3"], breaks = 20) -->
+<!-- ``` -->
+
+## prepare table for linear model
+
+lm can't deal with dashes in module names so replace with underscore
 
 ```{r}
-strTmp <- colnames(dt_datExpr[,-"gene"])
-dt_datExpr[, (strTmp) := lapply(.SD, as.numeric), .SDcols = strTmp]
+colnames(mat_scaled_embed) <- gsub("-","_",colnames(mat_scaled_embed))
 ```
 
 ```{r}
@@ -127,199 +145,315 @@ dt_metadata <- fread(here("data", "moylan2013.metadata.csv"))
 ```
 
 transform fibrosis to indicator variable
-```{r}
-dt_metadata[,fibrosis:=ifelse(fibrosis=="advanced",1,0),]
-```
-
-load data.table with information on module and cell type of origin
 
 ```{r}
-path_geneModule <- paste0(dirWGCNA_tables,"liver_perslab_int_wgcna2_cell_cluster_module_genes_subCellClusters_merged.csv.gz")
-  
-dt_geneModule <- fread(path_geneModule)
-
-head(dt_geneModule)
+dt_metadata[,condition:=factor(ifelse(fibrosis=="advanced",1,0)),]
 ```
+
+<!-- load data.table with information on module and cell type of origin -->
+
+<!-- ```{r} -->
+<!-- path_geneMod_perslab <- paste0(dirWGCNA_tables,prefixData, "_",prefixRun_WGCNA,"_geneMod.csv.gz") -->
+
+<!-- dt_geneMod_perslab <- fread(path_geneMod_perslab) -->
+
+<!-- #head(dt_geneMod_perslab) -->
+
+<!-- path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_wgcna3_geneMod.csv.gz") -->
+
+<!-- dt_geneMod_gerhard2018 <- fread(path_geneMod_gerhard2018) -->
+
+<!-- #head(dt_geneMod_gerhard2018) -->
+
+<!-- path_geneMod_moylan2013 <- paste0(dirWGCNA_tables,"liver_moylan2013_wgcna1_geneMod.csv.gz") -->
+
+<!-- dt_geneMod_moylan2013 <- fread(path_geneMod_moylan2013) -->
+
+<!-- #head(dt_geneMod_moylan2013) -->
+<!-- ``` -->
 
 # analysis
 
-## compute module embeddings in Moylan et al data
+# Are any modules zero in all samples (because the genes aren't found in the bulk dataset) ?
+
+<!-- ```{r} -->
+<!-- vec_allZero <- apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0)) -->
+<!-- table(vec_allZero) -->
+<!-- # FALSE  -->
+<!-- #   129 -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- if (any(vec_allZero)) { -->
+<!--   # get rid of all-zero columns, i.e. modules where none of the genes were matched in the bulk expression data -->
+<!--   mat_embed <- mat_embed[,!apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))] -->
+
+<!--   dim(mat_embed) -->
+<!-- } -->
+<!-- ``` -->
+
+
+## run linear models
+
+### all modules
+
+### combine embeddings and metadata
+
+run linear models 
 
 ```{r}
-
-# NB: for some reason, in data.table, when querying rows, it seems the ..<variable> indexing doesn't work. So we need to hard-code it.
-
-dt_geneModule[,..colModule][[1]]%>% unique -> mods_iter
-
-mods_iter<- mods_iter[!is.na(mods_iter)]
-
-mat_embed <- sapply(mods_iter, function(mod) {
-
-  # get gene weights
-  vec_pkMs <- dt_geneModule[module_merged==mod, pkMs,]
-
-  # normalize module gene weights to sum to 1
-  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
-
-  # find corresponding rows of the expression matrix
-  vec_idxRow <- match(dt_geneModule[module_merged==mod, genes, ], dt_datExpr[,gene])
-
-  # filter out mis-matches
-  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
-  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
-
-  # compute weighted sum of normalized expression
-  dt_datExpr[vec_idxRow,-("gene")] %>% as.matrix -> mat_sub
-
-  vec_pkMs %*% mat_sub
-
-})
-
-rownames(mat_embed) <- colnames(dt_datExpr)[-1]
-
-mat_embed %>% head
+dt_model_tmp <- data.table(dt_metadata, mat_scaled_embed[dt_metadata$geo_accession,])
 ```
-
-# Are any modules zero in all samples (because the genes aren't found in the bulk dataset) ? 
-```{r}
-vec_allZero <- apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))
-table(vec_allZero)
-# FALSE
-#  112
-```
-
-```{r}
-
-if (any(vec_allZero)) {
-  # get rid of all-zero columns, i.e. modules where none of the genes were matched in the bulk expression data
-  mat_embed <- mat_embed[,!apply(X=mat_embed, MARGIN=2, FUN = function(x) all(x==0))]
-
-  dim(mat_embed)
-}
-```
-
-# Correlation analysis
-
-## Moylan 2013
-
-Since we don't have access to other patient metadata, we can only perform a simple correlation analysis
-
-```{r}
-fnc_stat <- function(data, indices) {
-  apply(X=data, MARGIN = 2, FUN = function(vec_modEmbed) {
-  vec_idx =  match(dt_metadata[,geo_accession], names(vec_modEmbed))
-  #vec_idx = vec_idx[!is.na(vec_idx)] # should not be necessary
-  cor(x=dt_metadata[vec_idx,fibrosis],
-      y=vec_modEmbed[indices], #this is where boot scrambles the observations
-      method="pearson")
-  })  
-}
-
-set.seed(seed=randomSeed)
-        
-boot_out <- boot::boot(data=mat_embed, 
-                       statistic = fnc_stat,
-                       R = nRep,
-                       sim = "ordinary",
-                       stype = "i",
-                       parallel = getOption("boot.parallel"),
-                       ncpus = getOption("boot.ncpus"))
-        
-```
-
-### Compute empirical p-value
-
-```{r}
-vec_p.value <- sapply(1:length(boot_out[["t0"]]), FUN = function(j) {
-  p.value <- (sum(boot_out[["t"]][,j] > abs(boot_out[["t0"]][j]) | 
-                   boot_out[["t"]][,j] < -abs(boot_out[["t0"]][j])) + 2) / nRep 
-})
-```
-
-gather the results in a data frame
-
-```{r}
-
-dt_metadataAssoc <- data.table(
-  cell_cluster =  dt_geneModule[!duplicated(module),][match(colnames(mat_embed), module),cell_cluster],
-  module = colnames(mat_embed),
-  rho = boot_out[["t0"]],
-  p.value = vec_p.value)
-
-dt_metadataAssoc <- dt_metadataAssoc[order(cell_cluster),]
-dt_metadataAssoc
-```
-
-Filter gene modules to keep only those that are significantly correlated with condition after correcting for multiple testing
-
-```{r}
-dt_metadataAssoc <- dt_metadataAssoc[p.adjust(p.value,method = pAdjMethod)<=pValThreshold,]
-dim(dt_metadataAssoc)
-
-```
-
-## Plot results
-
-Assign colors to cell types for the plot
 
 ```{r}
 set.seed(randomSeed)
-colorvec = sample(x=unique(gsub("\\d","",colors())), size=length(unique(dt_metadataAssoc[,cell_cluster,])), replace=F)
-dt_metadataAssoc[,colors_cell_cluster:=rep(x = colorvec,times = as.numeric(table(dt_metadataAssoc[,cell_cluster,]))),]
+
+lapply(colnames(mat_scaled_embed), function(module) {
+  #formula_tmp <- formula(paste0(module, "~ condition"))
+  ##mat_model <- model.matrix(object = formula_tmp, data=dt_model_tmp)
+  #regr<-lm(formula = formula_tmp, dt_model_tmp)
+  #bootOut = "error"
+  #class(bootOut) = "try-error"
+  if (all(is.na(mat_scaled_embed[,module]))) {
+    return(NA) 
+  } else {
+    fnc_stat = function(data,indices) {
+       lm(
+         data = data[indices,], 
+         formula = formula(paste0(module, "~ condition"))) %>% coefficients()
+    }
+    bootOut = "error"
+    class(bootOut) = "try-error"  
+    while (class(bootOut)=="try-error") {
+       bootOut = try({
+          set.seed(randomSeed+1)
+          bootOut <- boot::boot(data=dt_model_tmp, 
+                                 statistic = fnc_stat,
+                                 R = R,
+                                 sim = "ordinary",
+                                 stype = "i",
+                                 parallel = getOption("boot.parallel"),
+                                 ncpus = getOption("boot.ncpus")) 
+        })
+      
+    }
+    return(bootOut)
+  }
+}) -> list_bootOut 
+
+names(list_bootOut) = colnames(mat_scaled_embed)
 ```
 
-Convert cell type to ordered factor
+extract coefficient tables 
+
+get p-value, std error and confidence intervals from the $t
+
+```{r}
+mat_bootOut_stats <- t(sapply(names(list_bootOut), function(module) {
+  bootOut = list_bootOut[[module]]
+  vec_out = tryCatch({
+    mat_boot_replicates = bootOut$t
+    colnames(mat_boot_replicates) = names(bootOut$t0)
+    idx_col = grep("condition",names(bootOut$t0))
+    # compute bootstrap statistics
+    bootBias = mean(mat_boot_replicates[,idx_col]) - bootOut$t0[idx_col]
+    bootMean = mean(mat_boot_replicates[,idx_col]) 
+    bootSE = sd(mat_boot_replicates[,idx_col])
+    bootMed = median(mat_boot_replicates[,idx_col])
+    # compute bootstrap percentile intervals 
+    bootciOut = boot.ci(bootOut, index = 2)
+    confInt_lower_percentile = bootciOut$percent[4]
+    confInt_upper_percentile = bootciOut$percent[5]
+    # compute Normal-theory intervals
+    confInt_lower_norm = bootciOut$normal[2]
+    confInt_upper_norm = bootciOut$normal[3]
+    
+    c("estimate_original"=bootOut$t0[idx_col],
+     "bootSE"=bootSE,
+     "estimate_bootMean"=bootMean,
+     "estimate_bootMed" = bootMed,
+     "confInt_lower_percentile"=confInt_lower_percentile,
+     "confInt_upper_percentile"=confInt_upper_percentile,
+     "confInt_lower_norm"=confInt_lower_norm,
+     "confInt_upper_norm"=confInt_upper_norm,
+      "p.value_percentile" = max(0.5,min(sum(mat_boot_replicates[,idx_col]>0), sum(mat_boot_replicates[,idx_col]<0)))*2/R,
+     "p.value_norm" = pnorm(q=abs(bootMean), mean=0, sd=bootSE, lower.tail = F)*2)
+  }, error = function(err) {
+    warning(paste0(module, ": ", err))
+    c("estimate_original"=NA_real_,
+     "bootSE"=NA_real_,
+     "estimate_bootMean"=NA_real_,
+     "estimate_bootMed" = NA_real_,
+     "confInt_lower_percentile"=NA_real_,
+     "confInt_upper_percentile"=NA_real_,
+     "confInt_lower_norm"=NA_real_,
+     "confInt_upper_norm"=NA_real_,
+      "p.value_percentile" = NA_real_,
+     "p.value_norm"=NA_real_)
+    })
+  
+}))
+dt_bootOut_stats = data.table("condition"="fibrosis_severity", 
+                              "module"=names(list_bootOut), 
+                              mat_bootOut_stats)
+
+colnames(dt_bootOut_stats)[colnames(dt_bootOut_stats)=="estimate_original.condition1"] <- "estimate_original" # for some reason, it appends ".condition" to these column names
+```
+
+<!-- ```{r} -->
+<!-- sapply(list_bootOut, is.na) %>% sum -->
+<!-- ``` -->
+
+<!-- check the residuals .  -->
+
+<!-- ```{r} -->
+<!-- # n is the same within a condition -->
+<!-- n <- length(list_regr[[1]]$residuals) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- regr <- list_regr[[69]] -->
+
+<!-- stats::qqplot(y = summary(regr)$residuals/summary(regr)$sigma, x=qnorm(p=seq(from=0.01, to=1, by=1/n)), xlim=c(-3,3), ylim=c(-3,3)) -->
+
+<!-- abline(coef=c(0,1)) -->
+<!-- ``` -->
+
+
+<!-- get coefficient matrices -->
+
+<!-- ```{r} -->
+<!-- lapply(list_regr, function(regr) { -->
+<!--   regr %>% broom::tidy()  -->
+<!-- }) -> list_tbl_tmp  -->
+
+<!-- names(list_tbl_tmp) = colnames(mat_scaled_embed) -->
+<!-- ``` -->
+
+<!-- extract coefficients for the condition regressors  -->
+
+<!-- ```{r} -->
+
+<!-- mat_out <- sapply(list_tbl_tmp, function(tbl_regr) { -->
+<!--     tbl_regr[tbl_regr$term=="condition1",colnames(tbl_regr) %in% c("estimate","std.error","statistic","p.value")]  -->
+<!--   }) %>% t -->
+
+<!-- dt_condition_coef <- data.table("module"= rownames(mat_out), mat_out)  -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_condition_coef[[paste0("p.value_",params$pAdjMethod)]]   <- p.adjust(p=dt_condition_coef$p.value,method=params$pAdjMethod) -->
+<!-- ``` -->
+
+<!-- how well do the betas correlate across modules with those for fibrosis in Gerhard? -->
+
+<!-- ```{r} -->
+<!-- dt_fibrosis_coef_gerhard2018 <- fread(paste0(dirWGCNA_tables, "liver_perslab_int_fibrosis_assoc_in_gerhard2018_201008.csv")) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_coef[,estimate] %>% as.numeric, as.numeric(dt_fibrosis_coef_gerhard2018$estimate)) -->
+<!-- # [1] 0.4491132 -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_fibrosis_severity_coef_gerhard2018 <- fread(paste0(dirWGCNA_tables, "liver_perslab_int_sc_modules_log2_fibrosis_severity_assoc_in_gerhard2018_201008.csv")) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- condition = quote(!grepl("moylan|gerhard", dt_condition_coef$module)) -->
+<!-- dt_condition_coef_perslab = dt_condition_coef[eval(condition)] -->
+<!-- dt_fibrosis_severity_coef_gerhard2018_perslab = dt_fibrosis_severity_coef_gerhard2018[eval(condition)] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_coef_perslab[,estimate] %>% as.numeric, as.numeric(dt_fibrosis_severity_coef_gerhard2018_perslab$estimate)) -->
+<!-- # [1] 0.4491132 -->
+<!-- ``` -->
+
+<!-- check correlation of module betas for fibrosis in Moylan with module betas for lobular inflammation in gerhard 2018 -->
+
+<!-- ```{r} -->
+<!-- dt_lobinflam_coef_gerhard2018 <- fread(paste0(dirWGCNA_tables, "liver_perslab_int_sc_bulk_modules_scaled_lob_inflam_association_in_gerhard2018_200511.csv")) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- cor(dt_condition_coef[,estimate] %>% as.numeric, as.numeric(dt_lobinflam_coef_gerhard2018$estimate)) -->
+<!-- # [1] 0.386009 -->
+<!-- ``` -->
+
+<!-- check correlation between lob inflam and fibrosis betas in Gerhard 2018 -->
+
+<!-- ```{r} -->
+<!-- cor(dt_fibrosis_coef_gerhard2018[,estimate] %>% as.numeric, as.numeric(dt_lobinflam_coef_gerhard2018$estimate)) -->
+<!-- # [1] 0.7230158 -->
+<!-- ``` -->
+
+
+## write out gene module assocation results
 
 ```{r}
 
-orderToUse1 = 1:length(dt_metadataAssoc[,cell_cluster,])
-dt_metadataAssoc[,cell_cluster:=factor(x = dt_metadataAssoc[,cell_cluster,])]
-dt_metadataAssoc[,cell_cluster := reorder(x=dt_metadataAssoc[,cell_cluster,], X = orderToUse1, order=T)]
+fwrite(x=dt_bootOut_stats, file=paste0(dirWGCNA_tables, prefixData, "_mod_fibrosis_assoc_in_moylan2013_", flagDate,".csv"))
+
+openxlsx::write.xlsx(x=dt_bootOut_stats,file = paste0(dirWGCNA_tables, prefixData, "_mod_fibrosis_assoc_in_moylan2013_", flagDate,".xlsx"))
 
 ```
 
-same for modules
+# look at individual gene expression 
+
+```{r}
+vec_genes = c("S100A4", "S100A6", "S100A8",  "S100A9", "S100A10", "S100A12", "VCAN")
+```
+
+```{r}
+condition = quote(match(vec_genes, dt_datExpr$gene))
+ 
+mat_datExpr_sub = dt_datExpr[eval(condition)] %>% dplyr::select(!gene) %>% t  %>% scale
+
+colnames(mat_datExpr_sub) = vec_genes
+```
+
+```{r}
+dt_data_genes <- data.table(dt_metadata, mat_datExpr_sub)
+```
+
+```{r}
+lapply(vec_genes, function(gene) {
+  formula_tmp <- formula(paste0(gene, "~ fibrosis"))
+  ##mat_model <- model.matrix(object = formula_tmp, data=dt_model_tmp)
+  regr<-lm(formula = formula_tmp, dt_data_genes)
+  regr %>% broom::tidy() 
+}) -> list_tbl_regr
+
+names(list_tbl_regr) <- vec_genes
+```
+
+extract coefficients for the regressors 
+
+```{r}
+mat_out <- sapply(list_tbl_regr, function(tbl_regr) {
+    tbl_regr[tbl_regr$term=="fibrosis",colnames(tbl_regr) %in% c("estimate","std.error","statistic","p.value")] 
+  }) %>% t
+
+dt_coef = data.table("gene"= rownames(mat_out), "condition"="fibrosis", mat_out)
+```
 
 ```{r}
 
-orderToUse2=1:length(dt_metadataAssoc[,module])
-dt_metadataAssoc[,module:= factor(x = module)]
-dt_metadataAssoc[,module:= reorder(x=module, X = orderToUse2, order=T)]
+fwrite(x=dt_coef, file=paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_S100_genes_assoc_in_moylan2013_scaled_", flagDate,".csv"))
+       
+openxlsx::write.xlsx(x=list_dt_condition_coef[[name]],file = paste0(dirWGCNA_tables, prefixData, "_sc_bulk_modules_scaled_", name, "_association_in_gerhard2018_", flagDate,".xlsx"))
+
 
 ```
 
-output the plot 
+next: 
 
-```{r}
-
-# plot
-p <- ggplot(data=dt_metadataAssoc, aes(x=module, y=rho, fill=cell_cluster)) +
-  geom_bar(stat="identity", 
-           position=position_identity()) + #, +
-           #group=cell_cluster) + 
-  #geom_errorbar(aes(ymin=lower, ymax=upper, width=0.2, colour="orange", alpha=0.9, size=1.3)) +
-  scale_colour_discrete(guide=FALSE) +
-  scale_size(guide=FALSE) +
-  scale_alpha(guide=FALSE) +
-  scale_fill_manual(values=unique(dt_metadataAssoc$colors_cell_cluster)) + # this is a kluge
-  scale_y_continuous("Pearson's rho", expand = c(0, 0)#, 
-                     #limits=c(min(data_tmp[["lower"]])-0.5, max(data_tmp[["upper"]])+.5), 
-                     #breaks=as.integer(seq.int(from = min(data_tmp[["lower"]]-0.5), to=max(data_tmp[["upper"]]+0.5), by=1))) +
-  ) + 
-  scale_x_discrete("module") +  
-
-  theme(axis.text.x = element_text(angle=90,hjust=1),#element_blank(),
-      axis.line.x = element_blank(),
-      axis.ticks.x = element_blank(),
-      panel.grid.major = element_blank(), 
-      panel.grid.minor = element_blank()) 
-
-saveMeta(savefnc=ggsave,plot = p,filename = here("plots", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_", flagDate, "_module_metadata_rho_plot.pdf")), height=10, width =15)
-
-```
-
-## save correlation analysis results
-
-```{r}
-fwrite(x=dt_metadataAssoc, file=here("output", paste0(prefixData, "_" , prefixRun, "_", prefixOut, "_", flagDate, "_results.csv")))
-```
+liver_module_sc_merge_to_metamodules.Rmd
+liver_module_plots.Rmd
+liver_module_GERR.Rmd
+liver_module_gprofiler2.Rmd

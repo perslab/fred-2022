@@ -1,0 +1,429 @@
+---
+title: 'Liver - embed modules in Gerhard 2018 data (compare AUC and linear combination)'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+previous: liver_module_bulk_overlap_with_sc.Rmd
+
+# Setup
+
+
+```{r}
+library("dplyr")
+library("Matrix")
+library("parallel")
+library("readr")
+library("openxlsx")
+library("data.table")
+library("here")
+
+# source utility functions
+
+source(here("/perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+
+# Set options
+
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+RNGkind("L'Ecuyer-CMRG")
+# ?boot
+# For most of the boot methods the resampling is done in the master process, but not if simple = TRUE nor sim = "parametric". In those cases (or where statistic itself uses random numbers), more care is needed if the results need to be reproducible. Resampling is done in the worker processes by censboot(sim = "wierd") and by most of the schemes in tsboot (the exceptions being sim == "fixed" and sim == "geom" with the default ran.gen).
+# 
+# Where random-number generation is done in the worker processes, the default behaviour is that each worker chooses a separate seed, non-reproducibly. However, with parallel = "multicore" or parallel = "snow" using the default cluster, a second approach is used if RNGkind("L'Ecuyer-CMRG") has been selected. In that approach each worker gets a different subsequence of the RNG stream based on the seed at the time the worker is spawned and so the results will be reproducible if ncpus is unchanged, and for parallel = "multicore" if parallel::mc.reset.stream() is called: see the examples for mclapply. 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+
+# Set constants
+
+randomSeed = 12345
+set.seed(randomSeed)
+
+pAdjustMethod = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+nRep = 10000 # bootstrap replicates
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+# generic project constants 
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+prefixRun_WGCNA = "wgcna3"
+prefixOut <- "gerhard2018"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module_renamed"
+colCellCluster = "cell_cluster_pres"
+```
+
+## load data
+
+Gerhard 2018 bulk expression data 
+
+```{r}
+dt_datExpr <- fread(here("data", "liver_gerhard2018_norm.counts.csv.gz"))
+
+mat_datExpr <- as.matrix(dt_datExpr[,-1])
+rownames(mat_datExpr) = dt_datExpr$gene
+```
+
+Load modules dataframes
+
+```{r}
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz")
+head(dt_geneMod_perslab)
+
+dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz")
+head(dt_geneMod_gerhard2018)
+# 
+# dt_geneMod_moylan2013<- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.csv.gz")
+# head(dt_geneMod_moylan2013)
+
+dt_geneMod_merged = rbindlist(list(dt_geneMod_perslab,dt_geneMod_gerhard2018))#, dt_geneMod_moylan2013))
+```
+
+```{r}
+dt_geneMod_merged[[colModule]] %>% unique -> vec_mods
+
+vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
+```
+
+## compute embeddings
+
+###m compute AUC  
+
+How many genes are generally non-zero?
+
+It is important to check that most cells have at least the number of expressed/detected genes that are going to be used to calculate the AUC (aucMaxRank in calcAUC())
+
+```{r}
+median(colSums(mat_datExpr>0)/nrow(mat_datExpr))
+
+# [1] 0.691221
+```
+
+```{r}
+min(colSums(mat_datExpr>0)/nrow(mat_datExpr))
+
+# [1] 0.6008318
+```
+
+compute gene-rankings for each sample
+
+```{r}
+
+# For each cell, the genes are ranked from highest to lowest value.
+samples_rankings <- AUCell_buildRankings(mat_datExpr, plotStats = T)
+
+```
+
+Calculate enrichment for the gene signatures (AUC)
+Aibar et al, SCENIC: single-cell regulatory network inference and clustering, Nature Methods (2017)
+https://www-nature-com.ep.fjernadgang.kb.dk/articles/nmeth.4463
+
+In brief, the scoring method is based on a recovery analysis where the x-axis (Supplementary Fig. 1c) is the ranking of all genes based on expression level (genes with the same expression value, e.g., '0', are randomly sorted); and the y-axis is the number of genes recovered from the input set
+
+
+```{r}
+
+list_genesets = lapply(vec_mods, function(mod) {
+  condition = quote(dt_geneMod_merged[[colModule]]==mod)
+  vec_mod_genes = dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]] %>% unique
+  # filter out moduke genes absent in expression data
+  vec_idxRow <- match(vec_mod_genes, dt_datExpr[,gene])
+  vec_mod_genes <- vec_mod_genes[!is.na(vec_idxRow)]
+  return(vec_mod_genes)
+})
+
+names(list_genesets) = vec_mods
+```
+
+```{r}
+# Compute 'Area Under the Cell' for each geneset.
+samples_AUC <- AUCell_calcAUC(list_genesets, 
+                              samples_rankings, 
+                              aucMaxRank=nrow(samples_rankings)*0.45,
+                              #nCores = 10, 
+                              verbose = T)
+
+```
+
+visualise 
+
+```{r}
+list_p = AUCell::AUCell_plotHist(cellsAUC = samples_AUC)
+```
+
+```{r}
+names(list_p)
+```
+
+```{r}
+plot(list_p[["gerhard2018_honeydew"]])
+```
+
+the honeydew module appears to consist of genes that are all very lowly expressed, and hence the AUC zero, unless we take into account more that the top 0.4 genes in each sample. 
+
+However this would go into non-expressed genes, in some samples.
+
+This points to a limitation of AUC: it cannot be used for modules of genes that are very lowly expressed, since they will nearly always fall outside the envelope set by `aucMaxRank`
+```{r}
+plot(list_p[["perslab_lightpink1"]])
+```
+
+```{r}
+plot(list_p[["perslab_darkseagreen2"]])
+```
+
+```{r}
+plot(list_p[["perslab_lightgoldenrodyellow"]])
+```
+
+most module AUCs are thick-tailed (left or right) Normal distributions
+
+```{r}
+mat_AUC = getAUC(samples_AUC) %>% t
+```
+
+### check module-module correlations
+
+```{r}
+mat_cor = cor(mat_embed)
+```
+
+plot correlation
+
+```{r}
+col3 <- colorRampPalette(c("blue", "white", "red"))
+
+p <- corrplot::corrplot(mat_cor, 
+                        method = "shade", 
+                        col = col3(50),
+                        type = "lower", 
+                        diag = F, 
+                        order = "hclust", 
+                        tl.cex=0.5)
+```
+
+### Compute module embeddings as weighted sums of normalized expression data
+
+look at histograms of normalized gene expression distribution across samples
+
+```{r}
+hist(mat_datExpr["RFC2",],breaks = 20)
+```
+
+```{r}
+dt_datExpr_moylan <- fread(here("data", "moylan2013.norm.expr.qc.csv.gz"))
+
+strTmp <- colnames(dt_datExpr_moylan[,-"gene"])
+dt_datExpr_moylan[, (strTmp) := lapply(.SD, as.numeric), .SDcols = strTmp]
+mat_datExpr_m <- as.matrix(dt_datExpr_moylan[,-1])
+rownames(mat_datExpr_m) = dt_datExpr_moylan$gene
+```
+
+```{r}
+hist(mat_datExpr_m["RFC2",],breaks = 20)
+```
+
+#### using normalized data, without scaling first
+
+```{r}
+mat_embed <- sapply(vec_mods, function(mod) {
+
+  # get gene weights
+  condition = quote(dt_geneMod_merged[[colModule]]==mod)
+  vec_pkMs <- dt_geneMod_merged[eval(condition), pkMs,]
+
+  # normalize module gene weights to sum to 1
+  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+
+  # find corresponding rows of the expression matrix
+  vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr))
+
+  # filter out mis-matches
+  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
+  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+
+  # compute weighted sum of normalized expression
+  mat_datExpr[vec_idxRow,] %>% as.matrix -> mat_datExpr_sub
+  
+  if (nrow(mat_datExpr_sub)==0) {
+    stop(paste0(mod, ": no module genes found in datExpr"))
+  } else if (nrow(mat_datExpr_sub)>0 & nrow(mat_datExpr_sub)<5) {
+    warning(paste0(mod, ": only ", nrow(mat_datExpr_sub), " module genes detected"))
+  }
+  vec_pkMs %*% mat_datExpr_sub
+
+})
+
+rownames(mat_embed) <- colnames(mat_datExpr)
+
+mat_embed[0:4,0:4]
+```
+
+#### using normalized data, but scaling first (no centering, though!)
+
+filter out genes with zero sd
+
+```{r}
+vec_sd = apply(mat_datExpr, MARGIN=1, FUN = sd)
+```
+
+```{r}
+table(vec_sd==0)
+# FALSE  TRUE
+# 33285   375
+```
+
+```{r}
+mat_datExpr <- mat_datExpr[vec_sd!=0,]
+```
+
+now scale (without centering)
+
+```{r}
+mat_datExpr %>% t %>% scale(., center=FALSE, scale=apply(.,2,sd,na.rm=T)) %>% t -> mat_datExpr_scaled
+```
+
+compare
+
+```{r}
+mat_datExpr[0:6,0:5]
+```
+
+```{r}
+mat_datExpr_scaled[0:6,0:5]
+```
+
+
+```{r}
+mat_scaled_embed <- sapply(vec_mods, function(mod) {
+
+  # get gene weights
+  condition = quote(dt_geneMod_merged[[colModule]]==mod)
+  vec_pkMs <- dt_geneMod_merged[eval(condition), pkMs,]
+
+  # normalize module gene weights to sum to 1
+  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+
+  # find corresponding rows of the expression matrix
+  vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr_scaled))
+
+  # filter out mis-matches
+  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
+  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+  
+  #print(length(vec_pkMs)/2)
+  # compute weighted sum of normalized and scaled expression
+  mat_datExpr_scaled[vec_idxRow,] %>% as.matrix -> mat_datExpr_scaled_sub
+  
+  if (nrow(mat_datExpr_scaled_sub)==0) {
+  warning(paste0(mod, ": no module genes found in datExpr"))
+  return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
+  } else if (nrow(mat_datExpr_scaled_sub)>0 & nrow(mat_datExpr_scaled_sub)<(length(vec_pkMs)/2)) {
+    warning(paste0(mod, ": only ", nrow(mat_datExpr_scaled_sub), " module genes detected"))
+    return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
+  }
+  return(vec_pkMs %*% mat_datExpr_scaled_sub)
+
+})
+
+rownames(mat_scaled_embed) <- colnames(mat_datExpr_scaled)
+
+mat_scaled_embed[0:4,0:4]
+```
+
+## rescale the embeddings to standard deviation 1
+
+```{r}
+mat_scaled_embed_rescaled <- scale(mat_scaled_embed, center=FALSE, scale=apply(mat_scaled_embed,2,sd,na.rm=T))
+```
+
+how correlated are mat_embed and mat_scaled_embed? 
+
+```{r}
+mat_cor = cor(mat_embed, mat_scaled_embed)
+vec_diag = mat_cor[col(mat_cor)==row(mat_cor)]
+median(vec_diag)
+# [1] 0.9034941
+```
+
+For most modules, scaling hardly changes anything. 
+These are presumably the ones where the different genes in the module tend to have a similar rank across samples.
+However for some modules the module activity scores are highly anti-correlated!!
+Intuitively, the mat_scaled_embed makes far more sense, since it doesn't favour highly expressed genes.
+
+<!-- plot the distributions of activity of a few modules -->
+
+<!-- ```{r} -->
+<!-- hist(mat_embed[,60],breaks = 50) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- mat_embed_log2  = log2(mat_embed+1) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- hist(mat_embed_log2[,8],breaks = 50) -->
+<!-- ``` -->
+
+<!-- log looks much better, closer to Normal, still interpretable.  -->
+
+write out scaled gene weighted sum module embeddings matrix
+
+```{r}
+dt_scaled_embed_rescaled = data.table("run_accession" = rownames(mat_scaled_embed_rescaled), mat_scaled_embed_rescaled)
+
+fwrite(dt_scaled_embed_rescaled, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mat_scaled_embed_gerhard2018.csv.gz", compress="gzip")
+```
+
+<!-- ```{r} -->
+<!-- dt_unscaled_embed = data.table("run_accession" = rownames(mat_embed), mat_embed) -->
+
+<!-- fwrite(dt_unscaled_embed, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mat_unscaled_embed_gerhard2018.csv.gz", compress="gzip") -->
+<!-- ``` -->
+
+next:
+
+liver_module_association_gerhard2018.Rmd

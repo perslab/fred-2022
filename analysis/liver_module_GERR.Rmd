@@ -24,6 +24,9 @@ params:
 #     toc_float: yes
 ---
 
+previous:
+liver_module_sc_merge_to_metamodules.Rmd
+
 # Setup
 
 ## Load packages
@@ -53,18 +56,14 @@ library("gage") # provides GO genesets
 #library("lme4")
 #library("WGCNA")
 #devtools::install_github(repo = "satijalab/seurat", ref = "develop")
-```
+library("GSA")
+# source utility functions
 
-## source utility functions
-
-```{r}
 source(here("/perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
-```
 
-## Set options
+# Set options
 
-```{r}
 options(stringsAsFactors = F, 
         use="pairwise.complete.obs", 
         warn=1, 
@@ -80,11 +79,9 @@ setDTthreads(threads = NULL,
 getDTthreads()
 
 #options(datatable.WhenJisSymbolThenCallingScope=TRUE)
-```
 
-## Set constants
+# Set constants
 
-```{r}
 randomSeed = 12345
 set.seed(randomSeed)
 
@@ -99,12 +96,8 @@ flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
 
 alpha =  0.25 # for GERR calling glmnet elasticnet, alpha \in [0,1], alpha==0 => ridge regression, alpha==1 => LASSO regression. Defaults to 0.5
         # ?gerr::regression_selected_pathways
-```
 
-
-generic project constants 
-
-```{r}
+# generic project constants 
 
 prefixData = "liver_perslab_int"
 prefixRun = "seurat_7"
@@ -118,10 +111,10 @@ dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
 colGeneWeights = "pkMs"
 colGeneNames = "genes"
-colModule = "module_assoc"
-colCellCluster = "cell_cluster_assoc"
-colModule_gerhard = "module"
-colCellCluster_gerhard = "cell_cluster"
+# colModule = "module_fibrosis_gerhard2018"
+# colCellCluster = "cell_cluster_fibrosis_gerhard2018"
+# colModule_gerhard = "cell_cluster_fibrosis_gerhard2018"
+# colCellCluster_gerhard = "cell_cluster"
 ```
 
 ## load data
@@ -129,19 +122,17 @@ colCellCluster_gerhard = "cell_cluster"
 gene network data
 
 ```{r}
-path_geneMod_perslab <- paste0(dirWGCNA_tables,"liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz")
+path_geneMod_perslab <- paste0(dirWGCNA_tables,"liver_perslab_int_wgcna3_geneMod.csv.gz")
 dt_geneMod_perslab <- fread(path_geneMod_perslab)
-head(dt_geneMod_perslab)
-```
+#head(dt_geneMod_perslab)
 
-```{r}
-path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_", "wgcna3","_geneMod_merged_200325.csv.gz")
+path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_wgcna3_geneMod.csv.gz")
 dt_geneMod_gerhard2018 <-fread(file=path_geneMod_gerhard2018)
-head(dt_geneMod_gerhard2018)
-```
+#head(dt_geneMod_gerhard2018)
 
-```{r}
-dt_geneMod_gerhard2018$module <- paste0("gerhard2018_",dt_geneMod_gerhard2018$module)
+# path_geneMod_moylan2013 <- paste0(dirWGCNA_tables,"liver_moylan2013_wgcna1_geneMod.csv.gz")
+# dt_geneMod_moylan2013 <-fread(file=path_geneMod_moylan2013)
+
 ```
 
 get a vector of all the genes as a background for gene test
@@ -188,10 +179,28 @@ if (!file.exists(here("data","liver_gerhard2018_genesBackground.RDS.gz"))) {
 }
 ```
 
+<!-- ```{r} -->
+<!-- if (!file.exists(here("data","liver_moylan2013_genesBackground.RDS.gz"))) { -->
+<!--   dt_datExpr_moylan2013 <- fread(here("data", "moylan2013.norm.expr.qc.csv.gz")) -->
+
+<!--   vec_genes_moylan2013 <- dt_datExpr_moylan2013$gene -->
+
+<!--   length(vec_genes_moylan2013) -->
+<!--   #[1] 22880 -->
+
+<!--   saveRDS(vec_genes_moylan2013, file = "/projects/jonatan/pub-perslab/18-liver-fred/data/liver_moylan2013_genesBackground.RDS") -->
+
+<!--   rm(dt_datExpr_moylan2013) -->
+<!--   } else { -->
+<!--   vec_genes_moylan2013 <- readRDS(here("data","liver_moylan2013_genesBackground.RDS")) -->
+<!-- } -->
+<!-- ``` -->
+
 ```{r}
-vec_allGenes <- union(vec_genes_gerhard2018, vec_genes_perslab)
+vec_allGenes <- union(vec_genes_perslab, vec_genes_gerhard2018)
+#vec_allGenes <- union(vec_allGenes, vec_genes_moylan2013)
 length(vec_allGenes)
-# [1] 36131
+# [1] 40312
 ```
 
 ### genesets
@@ -218,7 +227,7 @@ list_vec_genesetsGO %>% sapply(., length) %>% summary
 list_vec_genesetsGO <- list_vec_genesetsGO[sapply(list_vec_genesetsGO, length) >= genesetLengthMin & sapply(list_vec_genesetsGO, length) <= genesetLengthMax]
 
 length(list_vec_genesetsGO)
-# [1] 12044
+# [1] 12104
 ```
 
 map the GO genesets from Entrez Gene to symbol
@@ -263,44 +272,87 @@ list_vec_genesetsKEGG <- lapply(list_vec_genesetsKEGG, function(vec_geneset) {
 })
 ```
 
+
+#### download Reactome genesets
+
+```{r}
+destfile = "/projects/jonatan/data/genesets/ReactomePathways.gmt.zip"
+
+if (!file.exists(destfile)) {
+  download.file(url="https://reactome.org/download/current/ReactomePathways.gmt.zip", destfile)
+}
+```
+
+```{r}
+reactome.gmt <- GSA.read.gmt(unzip("/projects/jonatan/data/genesets/ReactomePathways.gmt.zip"))
+```
+
+```{r}
+list_vec_genesetsREACT = reactome.gmt$genesets
+list_vec_genesetsREACT = lapply(list_vec_genesetsREACT, toupper)
+names(list_vec_genesetsREACT) = reactome.gmt$geneset.names
+```
+
 # Analysis
 
 Make a list of vectors of genes in the WGCNA gene modules
 
 ```{r}
-
-# very painful to iterate over row conditions in data.table. Ended up resorting to dplyr
-# see https://stackoverflow.com/questions/39005117/select-rows-in-data-table-using-a-variable
-# NB: enclosing condition in quote() didn't work
-
-vec_mod_perslab = dt_geneMod_perslab[[colModule]][!is.na(dt_geneMod_perslab[[colModule]]) & nchar(dt_geneMod_perslab[[colModule]])>0] %>% unique
-
-list_vec_modGenes_perslab <- lapply(vec_mod_perslab, function(module) {
-  x = dt_geneMod_perslab[,..colModule][[1]]
-  condition <- x==module
-  dt_geneMod_perslab %>% dplyr::filter(., condition) %>% dplyr::select(genes) %>% '[['(1)
-})
-
-names(list_vec_modGenes_perslab) <- vec_mod_perslab
+dt_geneMod_comb = data.table::rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerhard2018))#, dt_geneMod_moylan2013))
 ```
 
+<!-- ```{r} -->
+<!-- # very painful to iterate over row conditions in data.table. Ended up resorting to dplyr -->
+<!-- # see https://stackoverflow.com/questions/39005117/select-rows-in-data-table-using-a-variable -->
+<!-- # NB: enclosing condition in quote() didn't work -->
+
+<!-- vec_mod_perslab = dt_geneMod_perslab[[colModule]][!is.na(dt_geneMod_perslab[[colModule]]) & nchar(dt_geneMod_perslab[[colModule]])>0] %>% unique -->
+
+<!-- list_vec_modGenes_perslab <- lapply(vec_mod_perslab, function(module) { -->
+<!--   x = dt_geneMod_perslab[,..colModule][[1]] -->
+<!--   condition <- x==module -->
+<!--   dt_geneMod_perslab %>% dplyr::filter(., condition) %>% dplyr::select(genes) %>% '[['(1) -->
+<!-- }) -->
+
+<!-- names(list_vec_modGenes_perslab) <- vec_mod_perslab -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- vec_mod_gerhard2018 = dt_geneMod_gerhard2018[[colModule_gerhard]][!is.na(dt_geneMod_gerhard2018[[colModule_gerhard]]) & nchar(dt_geneMod_gerhard2018[[colModule_gerhard]])>0] %>% unique -->
+
+<!-- list_vec_modGenes_gerhard2018 <- lapply(vec_mod_gerhard2018, function(module) { -->
+<!--   x = dt_geneMod_gerhard2018[,..colModule_gerhard][[1]] -->
+<!--   condition <- x==module -->
+<!--   dt_geneMod_gerhard2018 %>% dplyr::filter(., condition) %>% dplyr::select(genes) %>% '[['(1) -->
+<!-- }) -->
+
+<!-- names(list_vec_modGenes_gerhard2018) <- vec_mod_gerhard2018 -->
+<!-- ``` -->
 
 ```{r}
 
-vec_mod_gerhard2018 = dt_geneMod_gerhard2018[[colModule_gerhard]][!is.na(dt_geneMod_gerhard2018[[colModule_gerhard]]) & nchar(dt_geneMod_gerhard2018[[colModule_gerhard]])>0] %>% unique
+vec_mod_comb = dt_geneMod_comb[nchar(module_fibrosis_gerhard2018)>0 | nchar(module_lob_inflam_gerhard2018)>0, module_renamed] %>% unique
 
-list_vec_modGenes_gerhard2018 <- lapply(vec_mod_gerhard2018, function(module) {
-  x = dt_geneMod_gerhard2018[,..colModule_gerhard][[1]]
-  condition <- x==module
-  dt_geneMod_gerhard2018 %>% dplyr::filter(., condition) %>% dplyr::select(genes) %>% '[['(1)
+list_vec_modGenes <- lapply(vec_mod_comb, function(module) {
+  condition = dt_geneMod_comb[,module_renamed] == module #[[1]]
+  dt_geneMod_comb %>% dplyr::filter(., condition) %>% dplyr::select(genes) %>% '[['(1)
 })
 
-names(list_vec_modGenes_gerhard2018) <- vec_mod_gerhard2018
+names(list_vec_modGenes) <- vec_mod_comb
+# list_vec_modGenes_gerhard2018 <- lapply(vec_mod_gerhard2018, function(module) {
+#   x = dt_geneMod_gerhard2018[,..colModule_gerhard][[1]]
+#   condition <- x==module
+#   dt_geneMod_gerhard2018 %>% dplyr::filter(., condition) %>% dplyr::select(genes) %>% '[['(1)
+# })
+# 
+# names(list_vec_modGenes_gerhard2018) <- vec_mod_gerhard2018
 ```
 
-```{r}
-list_vec_modGenes_comb <- append(list_vec_modGenes_perslab, list_vec_modGenes_gerhard2018)
-```
+
+<!-- ```{r} -->
+<!-- list_vec_modGenes_comb <- append(list_vec_modGenes_perslab, list_vec_modGenes_gerhard2018) -->
+<!-- ``` -->
 
 Gene-set Enrichment with Regularized Regression - GERR 
 
@@ -331,19 +383,15 @@ gene_pathway_matrixGO = sapply(list_vec_genesetsGO, function(vec_geneset) {
 rownames(gene_pathway_matrixGO) <- vec_allGenes
   
 dim(gene_pathway_matrixGO)
-#[1] 36116  12044
-```
+#[1] 36116  12104
 
-convert to sparse matrix format 
+# convert to sparse matrix format 
 
-```{r}
 gene_pathway_matrixGO %>% as(., "sparseMatrix") -> gene_pathway_matrixGO
-```
 
-run regularised regression gene test 
+# run regularised regression gene test 
 
-```{r gaussianFit}
-list_gaussResGO <- lapply(list_vec_modGenes_comb, function(vec_modGenes) {
+list_gaussResGO <- lapply(list_vec_modGenes, function(vec_modGenes) {
   regression_selected_pathways(gene_input=vec_modGenes, 
                                gene_pathway_matrix = gene_pathway_matrixGO,
                                family="gaussian",
@@ -354,54 +402,34 @@ list_gaussResGO <- lapply(list_vec_modGenes_comb, function(vec_modGenes) {
 
 ```{r}
 vec_module_GERR <- rep(names(list_gaussResGO), sapply(list_gaussResGO, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
-```
 
-<!-- ```{r} -->
-<!-- vec_cell_cluster <- dt_metadataAssoc[,cell_cluster,][match(vec_module,dt_metadataAssoc[,module,] )] -->
-<!-- ``` -->
-
-```{r}
 vec_coef = lapply(list_gaussResGO, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
-```
 
-```{r}
 vec_p.value_fisher = lapply(list_gaussResGO, function(x) x[["selected_pathways_fisher_pvalue"]])  %>% unlist(use.names = F)
-```
 
-```{r}
 vec_GOid <- lapply(list_gaussResGO, function(x) x[["selected_pathways_names"]] 
                      %>%  names 
                      %>% substr(.,start=1, stop = 10))  %>% unlist(use.names = F)
-```
 
-```{r}
 lapply(list_gaussResGO, function(x) {
   x[["selected_pathways_names"]] %>% names %>% substr(., start=12, stop=1000)
   })  %>% unlist(use.names = F) -> vec_GOterm
-```
 
-```{r}
 
 sapply(vec_GOid, function(id) {
   dt_GO$Definition[dt_GO$go_id == id] %>% unique
 }) %>% unlist(use.names = F) -> vec_GOdef 
 
-```
-
-```{r}
 
 sapply(vec_GOid, function(id) {
   dt_GO$Ontology[dt_GO$go_id == id] %>% unique
 }) %>% unlist(use.names = F) -> vec_ontology
 
-```
 
-
-```{r}
 # adjust p-values for totalt number of tests (strict!)
 vec_p.value_fisher_GO_BH = p.adjust(vec_p.value_fisher, 
                                     method="BH",
-                                    n=length(list_vec_modGenes_comb)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)))
+                                    n=length(list_vec_modGenes)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)))
 
 # for (module in unique(vec_module_GERR)) {
 #   vec_logical = vec_module_GERR==module
@@ -423,11 +451,9 @@ dt_resultsGO <- data.table(
   GO_definition  = vec_GOdef,
   GO_ontology = vec_ontology
   )
-```
 
-order results by fisher test p.value 
+# order results by fisher test p.value  
 
-```{r}
 dt_resultsGO <- dt_resultsGO[order(p.value_fisher_BH)]
 ```
 
@@ -442,18 +468,14 @@ rownames(gene_pathway_matrixKEGG) <- vec_allGenes
   
 dim(gene_pathway_matrixKEGG)
 #[1] 36116  177
-```
 
-convert to sparse matrix format 
+# convert to sparse matrix format 
 
-```{r}
 gene_pathway_matrixKEGG %>% as(., "sparseMatrix") -> gene_pathway_matrixKEGG
-```
 
-run regularised regression gene test 
+# run regularised regression gene test 
 
-```{r gaussianFit}
-list_gaussResKEGG <- lapply(list_vec_modGenes_comb, function(vec_modGenes) {
+list_gaussResKEGG <- lapply(list_vec_modGenes, function(vec_modGenes) {
   regression_selected_pathways(gene_input=vec_modGenes, 
                                gene_pathway_matrix = gene_pathway_matrixKEGG,
                                family="gaussian",
@@ -464,37 +486,25 @@ list_gaussResKEGG <- lapply(list_vec_modGenes_comb, function(vec_modGenes) {
 
 ```{r}
 vec_moduleKEGG <- rep(names(list_gaussResKEGG), sapply(list_gaussResKEGG, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
-```
 
-```{r}
 #vec_cell_clusterKEGG <- dt_metadataAssoc[,cell_cluster,][match(vec_moduleKEGG,dt_metadataAssoc[,module,] )]
-```
 
-```{r}
 vec_coefKEGG = lapply(list_gaussResKEGG, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
-```
 
-```{r}
 vec_p.value_fisherKEGG = lapply(list_gaussResKEGG, function(x) x[["selected_pathways_fisher_pvalue"]])  %>% unlist(use.names = F)
-```
 
-```{r}
 vec_KEGGid <- lapply(list_gaussResKEGG, function(x) x[["selected_pathways_names"]] 
                      %>%  names 
                      %>% substr(.,start=1, stop = 8))  %>% unlist(use.names = F)
-```
 
-```{r}
 lapply(list_gaussResKEGG, function(x) {
   x[["selected_pathways_names"]] %>% names %>% substr(., start=10, stop=1000)
   })  %>% unlist(use.names = F) -> vec_KEGGterm
-```
 
-```{r}
 # adjust p-values for totalt number of tests (strict!)
 vec_p.value_fisher_KEGG_BH = p.adjust(vec_p.value_fisherKEGG, 
                                     method="BH",
-                                n=length(list_vec_modGenes_comb)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)))
+                                n=length(list_vec_modGenes)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)))
 
 # for (module in unique(vec_moduleKEGG)) {
 #   vec_logical = vec_moduleKEGG==module
@@ -515,12 +525,80 @@ dt_resultsKEGG <- data.table(
   KEGG_id = vec_KEGGid,
   KEGG_term = vec_KEGGterm
   )
+
+# order results by fisher test p.value 
+
+dt_resultsKEGG <- dt_resultsKEGG[order(p.value_fisher_BH)]
 ```
 
-order results by fisher test p.value 
+
+## Reactome 
 
 ```{r}
-dt_resultsKEGG <- dt_resultsKEGG[order(p.value_fisher_BH)]
+gene_pathway_matrixREACT = sapply(list_vec_genesetsREACT, function(vec_geneset) {
+  (vec_allGenes %in% vec_geneset) %>% as.numeric
+}, simplify = T)
+
+rownames(gene_pathway_matrixREACT) <- vec_allGenes
+  
+dim(gene_pathway_matrixREACT)
+#[1] 36116  2400
+
+# convert to sparse matrix format 
+
+gene_pathway_matrixREACT %>% as(., "sparseMatrix") -> gene_pathway_matrixREACT
+
+# run regularised regression gene test 
+
+list_gaussResREACT <- lapply(list_vec_modGenes, function(vec_modGenes) {
+  regression_selected_pathways(gene_input=vec_modGenes, 
+                               gene_pathway_matrix = gene_pathway_matrixREACT,
+                               family="gaussian",
+                               alpha=alpha)})
+```
+
+### gather results in a data.table
+
+```{r}
+vec_module_REACT <- rep(names(list_gaussResREACT), sapply(list_gaussResREACT, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
+
+vec_coef_REACT = lapply(list_gaussResREACT, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
+
+vec_p.value_fisher_REACT = lapply(list_gaussResREACT, function(x) x[["selected_pathways_fisher_pvalue"]])  %>% unlist(use.names = F)
+
+vec_REACTnames <- lapply(list_gaussResREACT, function(x) x[["selected_pathways_names"]] 
+                     %>%  names) %>% unlist(use.names = F)
+
+lapply(list_gaussResREACT, function(x) {
+  reactome.gmt$geneset.descriptions[match(names(x[["selected_pathways_names"]]), reactome.gmt$geneset.names)]}) %>% unlist -> vec_descriptionREACT
+
+# adjust p-values for total number of tests (strict!)
+vec_p.value_fisher_REACT_BH = p.adjust(vec_p.value_fisher_REACT, 
+                                    method="BH",
+                                n=length(list_vec_modGenes)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)+length(list_vec_genesetsREACT)))
+
+# for (module in unique(vec_moduleREACT)) {
+#   vec_logical = vec_moduleREACT==module
+#   vec_p.value_fisherREACT_BH = p.adjust(p=vec_p.value_fisherREACT_BH, 
+#                                        method = "BH", 
+#                                        n = length(list_vec_modmetagenes))
+# }
+```
+
+```{r}
+dt_resultsREACT <- data.table(
+  #cell_cluster = vec_cell_clusterREACT,
+  module = vec_module_REACT,
+  coef = vec_coef_REACT,
+  p.value_fisher = vec_p.value_fisher_REACT,
+  p.value_fisher_BH = vec_p.value_fisher_REACT_BH,
+  REACT_name = vec_REACTnames,
+  REACT_description = vec_descriptionREACT
+  )
+
+# order results by fisher test p.value 
+
+dt_resultsREACT <- dt_resultsREACT[order(p.value_fisher_BH)]
 ```
 
 # write results to disc
@@ -529,36 +607,25 @@ dt_resultsKEGG <- dt_resultsKEGG[order(p.value_fisher_BH)]
 
 ```{r}
 saveMeta(savefnc= fwrite, x = dt_resultsGO, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_", flagDate,"_GERR_GOenrichmentResults.csv"))
-```
 
-also as xlsx for convenience
+# also as xlsx for convenience
 
-```{r}
 openxlsx::write.xlsx(x=dt_resultsGO, file = paste0(dirWGCNA_tables,prefixData, "_", prefixRun,  "_", flagDate,"_GERR_GOenrichmentResults.xlsx"))
-```
 
-## KEGG
+# KEGG
 
-```{r}
 saveMeta(savefnc= fwrite, x = dt_resultsKEGG, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun,  "_", flagDate,"_GERR_KEGGenrichmentResults.csv"))
-```
 
-also as xlsx for convenience
+# also as xlsx for convenience
 
-```{r}
 openxlsx::write.xlsx(x=dt_resultsKEGG, file =  paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_",  flagDate,"_GERR_KEGGenrichmentResults.xlsx"))
-```
 
-if not already done, also write out #gene module tables as xlsx to allow to query 
+# REACTOME
 
-```{r}
-if (FALSE) {
-  openxlsx::write.xlsx(x=dt_geneMod_perslab, file = paste0(dirWGCNA_tables,"liver_perslab_int_wgcna3_geneMod_merged_200325.xlsx"))
-}
-```
+saveMeta(savefnc= fwrite, x = dt_resultsREACT, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun,  "_", flagDate,"_GERR_REACTOMEenrichmentResults.csv"))
 
-```{r}
-if (FALSE) {
-openxlsx::write.xlsx(x=dt_geneMod_gerhard2018, file = paste0(dirWGCNA_tables,"liver_gerhard2018_wgcna3_geneMod_merged_200325.xlsx"))
-}
+# also as xlsx for convenience
+
+openxlsx::write.xlsx(x=dt_resultsREACT, file =  paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_",  flagDate,"_GERR_REACTOMEenrichmentResults.xlsx"))
+
 ```

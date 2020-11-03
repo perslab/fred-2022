@@ -40,9 +40,7 @@ options(stringsAsFactors = F,
         verbose=F,
         mc.cores=40 # for parallel computation
         ) 
-```
 
-```{r}
 randomSeed = 12345
 set.seed(randomSeed)
 
@@ -50,11 +48,9 @@ pAdjMethod = "BH"
 pValThreshold = 0.05 #params$pValThreshold
 
 flagDate = substr(gsub("-","",as.character(Sys.Date())),3,1000)
-```
 
-## Load packages
+# Load packages
 
-```{r}
 #ipak(c("Seurat", "dplyr", "ggplot2", "Matrix", "parallel", "readr", "tidyr"))
 library("Seurat")
 library("data.table")
@@ -62,6 +58,8 @@ library("dplyr")
 library("ggplot2")
 library("Matrix")
 library("parallel")
+library("RColorBrewer")
+library("ggsci")
 #library("readr")
 #library("tidyr")
 library("here")
@@ -72,20 +70,16 @@ library("here")
 #library("ComplexHeatmap")
 #library("corrplot")
 #devtools::install_github(repo = "satijalab/seurat", ref = "develop")
-```
 
 ## source utility functions
 
-```{r}
 source(here("perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
-```
 
-## Set constants
+# Set constants
 
-generic project constants 
+# generic project constants 
 
-```{r}
 #prefixData <- "aizarani"
 prefixData = "liver_perslab_int"
 prefixRun = "seurat_7"
@@ -111,78 +105,193 @@ path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixO
 seuratObj <- load_obj(path_seuratObj)
 ```
 
-Load modules dataframe
+Load modules dataframes
 
 ```{r}
-dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz")
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz")
 head(dt_geneMod_perslab)
+```
+
+```{r}
+dt_geneMod_gerhard <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz")
+
+```
+
+```{r}
+dt_geneMod_comb = rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerhard))
 ```
 
 load association results
 
+<!-- ```{r} -->
+<!-- list_dt_condition_coef = lapply(c("steatosis","lob_inflam", "fibrosis"), function(condition) { -->
+<!--   fread(file = paste0(dirWGCNA_tables, prefixData, "_sc_bulk_modules_scaled_",condition,"_association_in_gerhard2018_200511.csv"))}) -->
+<!-- ``` -->
+
 ```{r}
-list_dt_condition_coef = lapply(c("steatosis","lob_inflam", "fibrosis"), function(condition) {
-  fread(file = paste0(dirWGCNA_tables, prefixData, "_sc_bulk_modules_scaled_",condition,"_association_in_gerhard2018_200511.csv"))})
+dt_condition_coef <- fread(paste0(dirWGCNA_tables, prefixData, "_mod_assoc_in_gerhard2018_BH_201023.csv"))
 ```
 
+## plot dendrogram of mac mods
+
+```{r}
+library("WGCNA")
+library("Seurat")
+```
+
+```{r}
+datExpr = subset(x=seuratObj, subset = cluster_perslab_coarse == "Macrophages") %>% GetAssayData(., assay = "SCT_combat", slot = "data") %>% as.matrix %>% t
+```
+
+subset to keep variable genes
+
+```{r}
+seuratObj <- FindVariableFeatures(seuratObj, nfeatures = 2000)
+```
+
+```{r}
+datExpr = datExpr[,VariableFeatures(seuratObj)]
+```
+
+```{r}
+dim(datExpr)
+# [1] 3613 2000
+```
+
+```{r}
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+```
+
+```{r}
+sft = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5)
+```
+
+plot softpower scale free fits
+
+```{r}
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=cex1,col="red");
+```
+
+mean connectivity
+```{r}
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+construct network 
+
+```{r}
+net = blockwiseModules(datExpr, power = 2,
+                       TOMType = "signed",
+                       minModuleSize = 20,
+                       reassignThreshold = 0,
+                       mergeCutHeight = 0.25,
+                       numericLabels = TRUE, 
+                       pamStage=FALSE,
+                       #pamRespectsDendro = FALSE,
+                       saveTOMs = FALSE,
+                       verbose = 3)
+```
+
+plot dendro
+
+```{r}
+
+mergedColors = labels2colors(net$colors)
+pdf(file = paste0(dirWGCNA_plots, prefixData, "_", prefixRun, "_wgcna_dendroplot_macs.pdf"))
+# open a graphics window
+#sizeGrWindow(12, 9)
+# Convert labels to colors for plotting
+
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+"Module colors",dendroLabels = FALSE, hang = 0.03,addGuide = TRUE, guideHang = 0.05)
+dev.off()
+```
 
 ## plot association betas with confidence interval
 
-add confidence interval
+<!-- add confidence interval -->
 
-```{r}
-list_dt_condition_coef = lapply(list_dt_condition_coef, function(dt_condition_coef){
-  dt_condition_coef = dt_condition_coef[grep("perslab",module)]
-  dt_condition_coef[,lower:=qnorm(p=0.05/2, mean = estimate, sd=std.error)]
-  dt_condition_coef[,upper:=qnorm(p=1-0.05/2, mean = estimate, sd=std.error)]
-})
-```
+<!-- ```{r} -->
+<!-- list_dt_condition_coef = lapply(list_dt_condition_coef, function(dt_condition_coef){ -->
+<!--   dt_condition_coef = dt_condition_coef[grep("perslab",module)] -->
+<!--   dt_condition_coef[,lower:=qnorm(p=0.05/2, mean = estimate, sd=std.error)] -->
+<!--   dt_condition_coef[,upper:=qnorm(p=1-0.05/2, mean = estimate, sd=std.error)] -->
+<!-- }) -->
+<!-- ``` -->
 
 ## celltypes and colors for plot
 
 ```{r}
-list_dt_condition_coef = lapply(list_dt_condition_coef, function(dt_condition_coef){
-  # find matching cell type
-  vec_celltype <- dt_geneMod_perslab$cell_cluster_merged[sapply(dt_condition_coef$module, function(eachmod) grep(eachmod, dt_geneMod_perslab$module_merged)[1])] 
-  dt_condition_coef[["celltype"]] = vec_celltype
-  
-  # order rows
-  dt_condition_coef = dt_condition_coef[order(celltype,module)]
-  orderToUse1 = 1:length(vec_celltype)
-  # force row order with factors
-  dt_condition_coef[["celltype"]] = factor(dt_condition_coef[["celltype"]], ordered = T)
-  dt_condition_coef[["celltype"]] = reorder(x=dt_condition_coef[["celltype"]], X = orderToUse1, order=T)
-  
-  dt_condition_coef[["module"]] = factor(gsub("perslab_","",dt_condition_coef[["module"]]), ordered = T)
-  dt_condition_coef[["module"]] = reorder(x=dt_condition_coef[["module"]], X = orderToUse1, order=T)
-  # color bars by cell type
-  vec_color = sample(x=unique(gsub("\\d","",colors())), size=length(unique(vec_celltype)), replace=F)
-  freqs = table(dt_condition_coef[["celltype"]])
 
-  vec_color_celltype = rep(x = vec_color, times = freqs) %>% factor(.,ordered=T)
-  dt_condition_coef[["color"]] = vec_color_celltype
-  return(dt_condition_coef)
-})
+vec_colors_cluster_perslab_coarse = readRDS(paste0(dirWGCNA_plots,prefixData,"_", prefixRun,  "_vec_colors_cluster_perslab_coarse.RDS"))
+
 ```
 
+## module coefficient 
+
+### coefficient plot v1: bar plot
+
+CODE NEEDS UPDATING re: color vec and dt
+
 ```{r}
-names(list_dt_condition_coef) = c("steatosis","lob_inflam", "fibrosis")
+list_dt_condition_coef_sub = lapply(c("fibrosis","lob_inflam"), function(condition){
+  
+  condition_filter = if (condition=="fibrosis") quote(dt_condition_coef$condition=="fibrosis")  else quote(dt_condition_coef$condition=="lob_inflam")
+  
+  dt_condition_coef_sub = dt_condition_coef[eval(condition_filter) & p.value_percentile_BH < params$pValThreshold]
+  # find matching cell type
+  vec_celltype <- dt_geneMod_comb[[paste0("cell_cluster_", condition, "_gerhard2018")]][sapply(dt_condition_coef_sub$module, function(eachmod) grep(eachmod, gsub("-","_",dt_geneMod_comb[[paste0("module_", condition, "_gerhard2018")]]))[1])] 
+  
+  dt_condition_coef_sub[["celltype"]] = vec_celltype
+  
+  # order rows
+  dt_condition_coef_sub = dt_condition_coef_sub[order(celltype,module)]
+  orderToUse1 = 1:length(vec_celltype)
+  # force row order with factors
+  dt_condition_coef_sub[["celltype"]] = factor(dt_condition_coef_sub[["celltype"]], ordered = T)
+  dt_condition_coef_sub[["celltype"]] = reorder(x=dt_condition_coef_sub[["celltype"]], X = orderToUse1, order=T)
+  
+  dt_condition_coef_sub[["module"]] = factor(dt_condition_coef_sub[["module"]], ordered = T) #factor(gsub("perslab_","",dt_condition_coef_sub[["module"]]), ordered = T)
+  dt_condition_coef_sub[["module"]] = reorder(x=dt_condition_coef_sub[["module"]], X = orderToUse1, order=T)
+  # color bars by cell type
+  vec_color_celltype = vec_colors_cluster_perslab_coarse[vec_celltype]  %>% factor(.,ordered=T)
+
+  #freqs = table(dt_condition_coef_sub[["celltype"]])
+
+  #vec_color_tmp = rep(x = vec_color_unique_tmp, times = freqs) %>% factor(.,ordered=T)
+  dt_condition_coef_sub[["color"]] = vec_color_celltype
+  return(dt_condition_coef_sub)
+})
+
+names(list_dt_condition_coef_sub) = c("fibrosis","lob_inflam")
 ```
 
 plot 
 
 ```{r}
-lapply(c("steatosis","lob_inflam", "fibrosis"), function(condition) {
-  dt_condition_coef = list_dt_condition_coef[[condition]]
+lapply(c("fibrosis","lob_inflam"), function(condition) {
+  dt_condition_coef_sub = list_dt_condition_coef_sub[[condition]]
   p <- 
-    ggplot(data=dt_condition_coef, aes(x=module, y=estimate, fill=celltype)) +
-    geom_bar(stat="identity", position=position_identity(), group=dt_condition_coef$celltype) + 
-    geom_errorbar(aes(ymin=estimate-std.error, ymax=estimate+std.error), width=.1) +
-    scale_fill_brewer(palette="Paired")+
-    #scale_fill_manual(values=dt_condition_coef$color) + # this is a kluge
+    ggplot(data=dt_condition_coef_sub, aes(x=module, y=estimate_original, fill=celltype)) +
+    geom_bar(stat="identity", position=position_identity(), group=dt_condition_coef_sub$celltype) + 
+    #geom_errorbar(aes(ymin=estimate-std.error, ymax=estimate+std.error), width=.1) +
+    geom_errorbar(aes(ymin=confInt_lower_percentile, ymax=confInt_upper_percentile), width=.1) +
+    #scale_fill_brewer(palette="Paired")+
+    scale_fill_manual(values=vec_colors_cluster_perslab_coarse[unique(dt_condition_coef_sub$celltype)]) + # this is a kluge
     #scale_fill_manual(values=unique(df_data$celltype)) + # this is a kluge
     #geom_hline(yintercept=cutoff, linetype="dashed", color = "red") +
-    scale_y_continuous("estimate", expand = c(0, 0)) +
+    scale_y_continuous("estimate_original", expand = c(0, 0)) +
     scale_x_discrete("module") +  
     # geom_text(aes(label=module),
     #         #angle=90,
@@ -201,6 +310,117 @@ lapply(c("steatosis","lob_inflam", "fibrosis"), function(condition) {
   saveMeta(savefnc=ggsave,plot = p,
            filename = paste0(dirWGCNA_plots,prefixData,"_", prefixRun,  "_sc_mod_", condition, "_assoc_gerhard_", params$date,".pdf"), height=10, width =15)
 })
+```
+
+
+## alternative beta plot: scatterplot 
+
+```{r}
+
+data.table::dcast(data = dt_condition_coef[condition %in% c("fibrosis","lob_inflam")], formula= "module + estimate_original + confInt_lower_percentile + confInt_upper_percentile + p.value_percentile_BH~ condition", value.var = c("estimate_original", "confInt_lower_percentile", "confInt_upper_percentile", "p.value_percentile_BH"))
+
+dt_fibrosis = dt_condition_coef[condition == "fibrosis"]
+colnames(dt_fibrosis)[4:ncol(dt_fibrosis)] = paste0("fibrosis_",colnames(dt_fibrosis)[4:ncol(dt_fibrosis)])
+
+dt_lob_inflam = dt_condition_coef[condition == "lob_inflam"]
+colnames(dt_lob_inflam)[4:ncol(dt_lob_inflam)] = paste0("lob_inflam_",colnames(dt_lob_inflam)[4:ncol(dt_lob_inflam)])
+
+dt_point = data.table::merge.data.table(x=dt_fibrosis, y= dt_lob_inflam, by="module", all=T)
+
+# keep only modules significantly associated with a phenotype
+dt_point = dt_point[lob_inflam_p.value_percentile_BH < params$pValThreshold | fibrosis_p.value_percentile_BH < params$pValThreshold]
+
+dt_point = dt_point[!grepl("gerhard", module)]
+dt_point$celltype = factor(gsub("_\\d+", "", dt_point$module), ordered=T)
+
+vec_colors_cluster_perslab_coarse_red = vec_colors_cluster_perslab_coarse
+
+names(vec_colors_cluster_perslab_coarse_red) = gsub("-","_",names(vec_colors_cluster_perslab_coarse_red))
+
+vec_colors_cluster_perslab_coarse = vec_colors_cluster_perslab_coarse_red[names(vec_colors_cluster_perslab_coarse_red) %in% as.character(dt_point$celltype)]
+
+vec_celltype_abbrev = c("Cholangiocytes"="Ch", "Dendritic_cells"="Den", "Endothelial_cells"="End", "Hepatic_stellate_cells"="Stel", "Hepatic_stem_cells"="Stem", "Hepatocytes"="Hep", "Macrophages"="Mac", "NK_like_cells"="NK", "T_cells_alpha_beta"="T_ab", "T_cells_gamma_delta"="T_gd")
+
+dt_point[,module_number:=gsub("[^0-9]","",module)]
+dt_point[,module_abbrev:=paste0(vec_celltype_abbrev[match(celltype,names(vec_celltype_abbrev))], module_number)]
+```
+
+```{r}
+max_lim = round(max(abs(c(dt_point$lob_inflam_estimate_original,dt_point$fibrosis_estimate_original))), 0)+0.2
+```
+
+```{r}
+set.seed(randomSeed)
+
+p = ggplot(data=dt_point, mapping=aes(lob_inflam_estimate_original, fibrosis_estimate_original, color=celltype)) + 
+  geom_point(size=4, alpha=0.8) + 
+  
+  scale_x_continuous(limits = c(-max_lim, max_lim)) + 
+  scale_y_continuous(limits=c(-max_lim, max_lim)) +
+  
+  ggrepel::geom_text_repel(
+  #geom_text(
+      #nudge_x = -1.8-dt_point$lob_inflam#[lob_inflam_estimate_original>1 | fibrosis_estimate_original>1]$lob_inflam_estimate_original,  
+      #nudge_y      = 0,
+      direction    = "both",
+      segment.color = "grey50",
+      #angle        = 0,
+      #hjust        = 0,
+      point.padding=NA,
+      segment.size = 0.2,
+      data = dt_point,#[lob_inflam_estimate_original>1 | fibrosis_estimate_original>1],
+      mapping = aes(
+        #x=lob_inflam_estimate_original,
+        #y= fibrosis_estimate_original,
+        label=stringr::str_wrap(module_abbrev)),
+        #color=dt_point[abs(lob_inflam_estimate_original)>0.8 | abs(fibrosis_estimate_original)>0.8]$color), 
+      color="black",
+      size=2.5, 
+      #fontface="bold"
+      ) +
+  
+   # 
+   # ggrepel::geom_text_repel(
+   #    nudge_x = 0.9-dt_point[lob_inflam_estimate_original<(-1) | fibrosis_estimate_original<(-1)]$lob_inflam_estimate_original,  
+   #    nudge_y      = 0,
+   #    direction    = "y",
+   #    segment.color = "grey50",
+   #    #angle        = 0,
+   #    hjust        = 0,
+   #    segment.size = 0.2,
+   #    data = dt_point[lob_inflam_estimate_original<(-1) | fibrosis_estimate_original<(-1)],
+   #    mapping = aes(
+   #      x=lob_inflam_estimate_original,
+   #      y= fibrosis_estimate_original,
+   #      label=stringr::str_wrap(module)),
+   #      #color=dt_point[abs(lob_inflam_estimate_original)>0.8 | abs(fibrosis_estimate_original)>0.8]$color), 
+   #    color="black",
+   #    size=2.5, 
+   #    #fontface="bold"
+   #    ) +
+  
+  #labs(x = "z-score", y="-log(p-value)", colour="z-score") +
+  labs(x = "lobular inflammation", y="fibrosis") +
+  
+  scale_color_manual(
+    values=vec_colors_cluster_perslab_coarse_red) +#,
+    #labels=levels(dt_point$celltype)) + 
+  geom_hline(yintercept = 0, size=0.1) +
+  geom_vline(xintercept = 0, size=0.1) + 
+  theme(axis.text = element_text(size = 9), 
+        axis.line = element_line(colour = "grey80"), 
+        axis.ticks = element_line(colour = "grey80"), 
+        #axis.title = element_text(size = 9),#, face = "bold"), 
+        panel.background = element_blank(), 
+        #legend.position = "none",
+        #panel.grid.minor = element_blank(), 
+        #panel.grid.major = element_line(colour = "grey80"), 
+        plot.background = element_blank(), 
+        panel.grid = element_blank(),
+        text = element_text(size = 9),
+        legend.title=element_blank()) 
+    # geom_text(aes(label=stringr::str_wrap(module)),color="black", size=2)
+  
 ```
 
 ====================================================================

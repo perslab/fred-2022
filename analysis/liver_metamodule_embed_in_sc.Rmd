@@ -1,5 +1,5 @@
 ---
-title: 'Liver - add cell embeddings on prioritised modules to seurat object'
+title: 'Liver - compute gene metamodule embeddings in single cell dataset'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -24,9 +24,7 @@ params:
 #     toc_float: yes
 ---
 
-previous: ran WGCNA on perslab, moylan and gerhard separately
-
-
+add cell embeddings on prioritised modules to metadata
 
 # Setup
 
@@ -98,14 +96,14 @@ dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
 colGeneWeights = "pkMs"
 colGeneNames = "genes"
-colModule = "module"
-colCellCluster = "cell_cluster"
+colModule = "module_meta"
+colCellCluster = "cell_cluster_meta"
 
 ```
 
 ## load data
 
-Seurat object contains expression data and cell + patient-level metadata
+Seurat object contains expression data and cell + donor-level metadata
 
 ```{r}
 path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
@@ -118,131 +116,101 @@ Load modules dataframe
 ```{r}
 dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz")
 head(dt_geneMod_perslab)
-
-dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz")
-head(dt_geneMod_gerhard2018)
 ```
+
+<!-- ```{r} -->
+<!-- dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz") -->
+<!-- head(dt_geneMod_gerhard2018) -->
+<!-- ``` -->
 
 
 ```{r}
 DefaultAssay(seuratObj) <- "SCT_combat"
 ```
 
-<!-- ```{r} -->
-<!-- seuratObj <- ScaleData(seuratObj, features = rownames(seuratObj)) -->
-<!-- ``` -->
+retrieve module embeddings
 
+TODO: Need to translate old to new module names
 ```{r}
-mat_datExpr <- as.matrix(GetAssayData(object = seuratObj, assay = "SCT_combat", slot="data"))
-rownames(mat_datExpr) <- rownames(seuratObj)
-mat_datExpr[0:4,0:4]
-```
+vec_mods_perslab = dt_geneMod_perslab[["module_renamed"]] %>% unique 
 
-```{r}
-vec_sd = apply(mat_datExpr, MARGIN=1, FUN = sd)
-```
-
-```{r}
-table(vec_sd==0)
-# FALSE 
-# 24609 
-```
-
-only keep genes that are part of modules
-
-```{r}
-mat_datExpr = mat_datExpr[rownames(mat_datExpr) %in% c(dt_geneMod_perslab$genes, dt_geneMod_gerhard2018$genes),]
-
-dim(mat_datExpr)
-```
-<!-- ```{r} -->
-<!-- mat_datExpr <- mat_datExpr[vec_sd!=0,] -->
-<!-- ``` -->
-
-now scale (without centering)
-
-```{r}
-mat_datExpr %>% t %>% scale(., center=FALSE, scale=apply(.,2,sd,na.rm=T)) %>% t -> mat_datExpr_scaled
+vec_mods_perslab <- vec_mods_perslab[nchar(vec_mods_perslab)>0]
 ```
 
 
-### compute module embeddings in sc data
+```{r}
+
+df_scaled_embed = seuratObj@meta.data[,gsub("\\.","-",colnames(seuratObj@meta.data)) %in% vec_mods_perslab]
+
+mat_scaled_embed = df_scaled_embed %>% as.matrix
+colnames(mat_scaled_embed) <- gsub("\\.","-",colnames(mat_scaled_embed))
+mat_scaled_embed[0:4,0:20]
+```
+
+
+### compute metamodule embeddings in sc data by taking weighted sums of the module embeddings
 
 ```{r}
-dt_geneMod_merged = rbindlist(list(dt_geneMod_perslab,dt_geneMod_gerhard2018))
-
-dt_geneMod_merged[[colModule]] %>% unique -> vec_mods
-
+dt_geneMod_perslab[["module_renamed"]] -> vec_mods
+names(vec_mods) = dt_geneMod_perslab[[colModule]]
 vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
+vec_mods <- vec_mods[!duplicated(vec_mods)]
+#vec_mods = gsub("-","_", vec_mods)
+names(vec_mods) %>% unique -> vec_mods_meta
 ```
 
 ```{r}
-mat_scaled_embed <- sapply(vec_mods, function(mod) {
- 
-  # get gene weights
-  condition = quote(dt_geneMod_merged[[colModule]]==mod)
-  vec_pkMs <- dt_geneMod_merged[eval(condition), pkMs,]
-
-  # normalize module gene weights to sum to 1
-  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
-
-  # find corresponding rows of the expression matrix
-  vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr_scaled))
-
-  # filter out mis-matches
-  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
-  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+mat_embed_meta = sapply(vec_mods_meta, function(mod_meta) {
   
-  #print(length(vec_pkMs)/2)
-  # compute weighted sum of normalized and scaled expression
-  mat_datExpr_scaled[vec_idxRow,] %>% as.matrix -> mat_datExpr_scaled_sub
-  
-  if (nrow(mat_datExpr_scaled_sub)==0) {
-  warning(paste0(mod, ": no module genes found in datExpr"))
-  return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
-  } else if (nrow(mat_datExpr_scaled_sub)>0 & nrow(mat_datExpr_scaled_sub)<(length(vec_pkMs)/2)) {
-    warning(paste0(mod, ": only ", nrow(mat_datExpr_scaled_sub), " module genes detected"))
-    return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
+  vec_mods_in_mod_meta = vec_mods[names(vec_mods)==mod_meta]
+  # weight by number of genes
+  vec_weights = sapply(vec_mods_in_mod_meta, function(each_mod) {sum(dt_geneMod_perslab[["module_renamed"]]==each_mod)})
+  vec_weights = vec_weights/sum(vec_weights)
+  names(vec_weights) = vec_mods_in_mod_meta
+  mat_tmp = mat_scaled_embed[,vec_mods_in_mod_meta]
+  if (!is.null(dim(mat_tmp))) {
+      # scale the columns of the embeddings matrix by number of genes and take the mean across modules
+    mat_tmp = sapply(colnames(mat_tmp), function(each_mod) mat_tmp[,each_mod]*vec_weights[each_mod])
+    mat_tmp %>% rowMeans
+  } else { # if the metamodule has a single module
+    mat_tmp
   }
-  return(vec_pkMs %*% mat_datExpr_scaled_sub)
-
 })
 
-rownames(mat_scaled_embed) <- colnames(mat_datExpr_scaled)
+mat_embed_meta[0:3,0:3]
 
-mat_scaled_embed[0:4,0:4]
+
 ```
 
-scale embeddings 
+```{r}
+sd(mat_embed_meta[,1])
 
+```
 
-## rescale the embeddings to standard deviation 1
+the metamodules have much lower variance than the modules. 
+Scale metamodules to standard deviation 1 just for consistency
 
 ```{r}
-mat_scaled_embed_rescaled <- scale(mat_scaled_embed, center=FALSE, scale=apply(mat_scaled_embed,2,sd,na.rm=T))
+mat_embed_meta_rescaled <- scale(mat_embed_meta, center=F, scale= apply(mat_embed_meta, 2, sd, na.rm = TRUE)) 
 ```
 
 ## add new embeddings to Seurat object
 
-<!-- ### first remove the old -->
-
-<!-- ```{r} -->
-<!-- vec_mods_old <- unique(dt_geneMod_merged$module_filter) -->
-<!-- for (mod_old in vec_mods_old){  -->
-<!--   if (mod_old %in% colnames(seuratObj@meta.data)) { -->
-<!--     seuratObj[[mod_old]] <- NULL   -->
-<!--   } -->
-<!-- } -->
-<!-- ``` -->
-
 ```{r}
-seuratObj <- AddMetaData(object=seuratObj, metadata = data.frame(row.names=rownames(mat_scaled_embed_rescaled), mat_scaled_embed_rescaled))
+seuratObj <- AddMetaData(object=seuratObj, metadata = data.frame(row.names=rownames(mat_embed_meta_rescaled), mat_embed_meta_rescaled))
 ```
+
+
+
+
+
+
 
 ```{r}
 saveRDS(object = seuratObj, file = path_seuratObj, compress = "gzip")
 ```
 
-next: liver_module_filter_prune.Rmd
+
+
 
 

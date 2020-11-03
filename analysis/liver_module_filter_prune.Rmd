@@ -1,0 +1,500 @@
+---
+title: 'Liver - prune redundant gene modules across cell types'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+previous: liver_module_embed_in_sc.Rmd
+
+# Setup
+
+## Set options
+
+
+```{r}
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        mc.cores=40 # for parallel computation
+        ) 
+
+randomSeed = 12345
+set.seed(randomSeed)
+
+pAdjMethod = "BH"
+pValThreshold = 0.05 #params$pValThreshold
+
+flagDate = substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+# Load packages
+
+
+library("data.table")
+library("dplyr")
+library("Matrix")
+library("parallel")
+library("here")
+library("WGCNA")
+#library("biomaRt")
+
+
+# source utility functions
+
+source(here("perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+
+# Set constants
+
+# generic project constants 
+
+#prefixData <- "aizarani"
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+prefixRunWGCNA = "wgcna3"
+prefixOut <- "SCTint"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colModule = "module"
+colCellClust = "cell_cluster"
+```
+
+we are interested in a subset of the "cluster_perslab_coarse" cell types
+
+```{r}
+vec_celltypesOfInterest <- c("T-cells-alpha-beta",
+                             "NK-like-cells",
+                             "Endothelial-cells",
+                             "T-cells-gamma-delta", 
+                             "Macrophages",  
+                             "Cholangiocytes",        
+                             "Hepatocytes",
+                             "Hepatic-stellate-cells", 
+                             "Dendritic-cells", 
+                             "Hepatic-stem-cells",
+                             "B-cells-mature",
+                             "Plasma-cells")
+```
+
+## load data
+
+load WGCNA gene module tables
+
+perslab 
+
+```{r}
+path_geneMod_perslab <- paste0(dirWGCNA_tables,"liver_perslab_int_", prefixRunWGCNA,"_geneMod.csv.gz")
+dt_geneMod_perslab <-fread(file=path_geneMod_perslab )
+dt_geneMod_perslab[0:3,]
+#                data    run   cell_cluster     module    genes        pkMs
+# 1: liver_perslab_int wgcna3 B-cells-mature lightblue3 KIAA1551 0.009426350
+# 2: liver_perslab_int wgcna3 B-cells-mature lightblue3     ZEB1 0.008230427
+# 3: liver_perslab_int wgcna3 B-cells-mature lightblue3    XYLT1 0.008185864
+```
+
+gerhard 2018
+
+```{r}
+path_geneMod_gerhard2018 <- paste0(dirWGCNA_tables,"liver_gerhard2018_", "wgcna3","_geneMod.csv.gz")
+dt_geneMod_gerhard2018 <-fread(file=path_geneMod_gerhard2018)
+dt_geneMod_gerhard2018[0:3,]
+#             data    run cell_cluster       module           genes       pkMs
+# 1: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000171848 0.03919702
+# 2: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000066279 0.03745749
+# 3: liver_gerhard2018 wgcna1  gerhard2018 midnightblue ENSG00000131747 0.03606625
+```
+
+<!-- moylan 2013 -->
+
+<!-- ```{r} -->
+<!-- path_geneMod_moylan2013 <- paste0(dirWGCNA_tables,"liver_moylan2013_", "wgcna1","_geneMod.csv.gz") -->
+<!-- dt_geneMod_moylan2013 <-fread(file=path_geneMod_moylan2013) -->
+<!-- dt_geneMod_moylan2013[0:3,] -->
+
+<!-- #                data    run cell_cluster               module   genes      pkMs -->
+<!-- # 1: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow    ANO2 0.2370768 -->
+<!-- # 2: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow CNTNAP5 0.2365604 -->
+<!-- # 3: liver_moylan2013 wgcna1   moylan2013 lightgoldenrodyellow  TEDDM1 0.2353492 -->
+
+<!-- ``` -->
+
+Seurat object containing module embeddings in single cell
+
+```{r}
+path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
+
+seuratObj <- load_obj(path_seuratObj)
+```
+
+```{r}
+mat_embed = seuratObj@meta.data[,c(unique(dt_geneMod_perslab$module), unique(dt_geneMod_gerhard2018$module))]
+```
+
+<!-- load perslab cell metadata  -->
+
+<!-- ```{r} -->
+<!-- dt_meta <- fread(here("data", paste0(prefixData, "_", prefixRun, "_metadata_full.csv.gz"))) -->
+<!-- dt_meta[0:3,0:5] -->
+<!-- ``` -->
+
+<!-- load Moylan 2013 bulk data -->
+
+<!-- ```{r} -->
+<!-- dt_datExpr_moylan <- fread(here("data", "moylan2013.norm.expr.qc.csv.gz")) -->
+<!-- ``` -->
+
+# Analysis / filtering 
+
+<!-- first map dt_geneMod genes to ensembl / hgnc -->
+
+<!-- using biomart -->
+<!-- https://www.bioconductor.org/packages/devel/bioc/vignettes/biomaRt/inst/doc/biomaRt.html -->
+
+<!-- ```{r} -->
+<!-- ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- grep("hgnc", listAttributes(ensembl)$name, value=T) -->
+<!-- #[1] "hgnc_id"         "hgnc_symbol"     "hgnc_trans_name" -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_mapping_biomart <- biomaRt::getBM(attributes = c('hgnc_symbol','ensembl_gene_id'), -->
+<!--                              filters = 'hgnc_symbol',  -->
+<!--                              values = dt_geneMod_perslab$genes,  -->
+<!--                              mart = ensembl) -->
+<!-- dt_mapping_biomart <- setDT(dt_mapping_biomart) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_mapping_perslab <- fread("/projects/jonatan/data/gene_remap/gene_annotation_hsapiens.txt.gz") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_perslab$ensembl_perslab <- gene_map(dataIn = dt_geneMod_perslab$genes,  -->
+<!--                                df_mapping = dt_mapping_perslab, -->
+<!--                                from = "hgnc_symbol",  -->
+<!--                                to = "ensembl_gene_id",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_perslab$ensembl_biomart <- gene_map(dataIn = dt_geneMod_perslab$genes,  -->
+<!--                                df_mapping = dt_mapping_biomart, -->
+<!--                                from = "hgnc_symbol",  -->
+<!--                                to = "ensembl_gene_id",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_moylan2013$ensembl <- gene_map(dataIn = dt_geneMod_moylan2013$genes,  -->
+<!--                                df_mapping = dt_mapping_perslab, -->
+<!--                                from = "hgnc_symbol",  -->
+<!--                                to = "ensembl_gene_id",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- colnames(dt_geneMod_gerhard2018)[which(colnames(dt_geneMod_gerhard2018)=="genes")] <- "ensembl" -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_gerhard2018$genes_perslab <- gene_map(dataIn = dt_geneMod_gerhard2018$ensembl,  -->
+<!--                                df_mapping = dt_mapping_perslab, -->
+<!--                                from = "ensembl_gene_id",  -->
+<!--                                to = "hgnc_symbol",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_gerhard2018$genes_biomart <- gene_map(dataIn = dt_geneMod_gerhard2018$ensembl,  -->
+<!--                                df_mapping = dt_mapping_biomart, -->
+<!--                                from = "ensembl_gene_id",  -->
+<!--                                to = "hgnc_symbol",  -->
+<!--                                na.rm = F) -->
+<!-- ``` -->
+
+add new filter columns to dt_geneMod to retain cell clusters of interest
+
+```{r}
+dt_geneMod_perslab[,cell_cluster_filter:=ifelse(cell_cluster %in% ..vec_celltypesOfInterest,cell_cluster,NA),]
+dt_geneMod_perslab[,module_filter:=ifelse(cell_cluster %in% ..vec_celltypesOfInterest,paste0("perslab_",module),NA),]
+```
+
+```{r}
+dt_geneMod_gerhard2018[,cell_cluster_filter:=cell_cluster]
+dt_geneMod_gerhard2018[,module_filter:=paste0("gerhard2018_",module)]
+```
+
+<!-- ```{r} -->
+<!-- dt_geneMod_moylan2013[,cell_cluster_filter:=cell_cluster] -->
+<!-- dt_geneMod_moylan2013[,module_filter:=paste0("moylan2013_", module)] -->
+<!-- ``` -->
+
+
+## check how modules correlate with covariates
+
+```{r}
+vec_covar_cell = c("nCount_RNA", "nFeature_RNA", "percent.mito", "percent.ribo", "CC.Difference", "cluster_perslab", "cluster_perslab_coarse")
+
+vec_covar_donor = c("sample_ID", "nas_sum","fibrosis_grade", "lobular_inflammation_grade", "Sex", "Age", "BMI", "Smoking", "Alcohol_use")
+```
+
+prep dataframes with dummy variables for factors
+
+```{r}
+df_covar_cell = seuratObj@meta.data[, vec_covar_cell]
+## check how metamodules correlate with covariates
+```
+
+
+```{r}
+vec_covar_cell = c("nCount_RNA", "nFeature_RNA", "percent.mito", "percent.ribo", "CC.Difference", "cluster_perslab", "cluster_perslab_coarse")
+
+vec_covar_donor = c("sample_ID", "nas_sum","fibrosis_grade", "lobular_inflammation_grade", "Sex", "Age", "BMI", "Smoking", "Alcohol_use")
+```
+
+prep dataframes with dummy variables for factors
+
+```{r}
+df_covar_cell = seuratObj@meta.data[, vec_covar_cell]
+# df_covar_cell$cluster_perslab <- factor(df_covar_cell$cluster_perslab)
+# df_covar_cell$cluster_perslab_coarse <- factor(df_covar_cell$cluster_perslab_coarse)
+
+mat_model_covar_cell = model.matrix(data = df_covar_cell, object=~  cluster_perslab-1 + cluster_perslab_coarse-1)
+
+df_covar_cell$cluster_perslab <- df_covar_cell$cluster_perslab_coarse <- NULL
+df_covar_cell <- data.frame(df_covar_cell, mat_model_covar_cell)
+```
+
+```{r}
+df_covar_donor = seuratObj@meta.data[,vec_covar_donor]
+vec_covar_donor_numeric = c("nas_sum", "fibrosis_grade", "lobular_inflammation_grade", "Age", "BMI", "Smoking", "Alcohol_use")
+#vec_covar_factor = c("sample_ID", "Sex", "Smoking",  "Ethnicity", "Alcohol_use") 
+df_covar_donor[, vec_covar_donor_numeric] <- apply(df_covar_donor[, vec_covar_donor_numeric], 2, as.numeric)
+#df_covar_donor[, vec_covar_factor] <- apply(df_covar_donor[, vec_covar_factor], 2, factor)
+
+mat_model_covar_donor = model.matrix(data = df_covar_donor, object=~  sample_ID-1 + Sex-1)
+
+df_covar_donor$sample_ID <- df_covar_donor$Sex <- NULL
+df_covar_donor <- data.frame(df_covar_donor, mat_model_covar_donor)
+```
+
+## compute correlations between module embeddings and covariates, but using only the cells in which the module was detected
+
+<!-- ```{r} -->
+<!-- list_mat_embed_cluster_perslab_coarse = lapply(unique(seuratObj$cluster_perslab_coarse), function(cell_clust) { -->
+
+<!-- }) -->
+
+<!-- names(list_mat_embed_cluster_perslab_coarse) = unique(seuratObj$cluster_perslab_coarse) -->
+<!-- ``` -->
+
+
+```{r}
+vec_covar_cell_filter = c("nCount_RNA", "percent.mito")
+```
+
+```{r}
+list_dt_covar_cor = lapply(vec_celltypesOfInterest, function(cell_clust) {
+  #print(cell_clust)
+  vec_mod_cell_clust = unique(dt_geneMod_perslab$module_filter[dt_geneMod_perslab$cell_cluster_filter==cell_clust])
+  vec_mod_cell_clust = vec_mod_cell_clust[!is.na(vec_mod_cell_clust)]
+  
+  vec_logical_cells = seuratObj$cluster_perslab_coarse==cell_clust
+  
+  mat_covar_cor = sapply(vec_mod_cell_clust, function(module) {
+    #print(module)
+    cor(mat_embed[vec_logical_cells,gsub("perslab_", "", module)], df_covar_cell[vec_logical_cells,vec_covar_cell_filter])
+  }) %>% t
+  
+  dt_out = data.table("module"= rownames(mat_covar_cor), mat_covar_cor, "n_cells"=sum(vec_logical_cells))
+  
+  colnames(dt_out)[c(2,3)] = vec_covar_cell_filter
+  
+  return(dt_out )
+})
+
+dt_covar_cor = rbindlist(list_dt_covar_cor)
+
+```
+
+```{r}
+hist(dt_covar_cor$nCount_RNA, breaks = 25)
+```
+
+```{r}
+hist(dt_covar_cor$percent.mito, breaks = 25)
+```
+
+```{r}
+for (covar in vec_covar_cell_filter) {
+  WGCNA::corPvalueStudent(cor=dt_covar_cor[[covar]], nSamples=dt_covar_cor[["n_cells"]]) %>% 
+    p.adjust(p=., method = "BH") -> dt_covar_cor[[paste0(covar, "_p.value_BH")]] 
+}
+
+```
+
+we see quite a high correlations
+mean and mode > 0 for nCount_RNA, < 0 for percent.mito
+
+statistical significance seems too strict, as we should expect biological processes to be correlated with these covariates. So what is a reasonable way to use the information?
+
+One option is to filter out modules which are more driven by these covariates than by cell cluster membership 
+
+```{r}
+mat_covar_cor_allcells = cor(
+  mat_embed[,gsub("\\.","-",colnames(mat_embed)) %in% gsub("perslab_", "", dt_geneMod_perslab$module_filter)],
+  df_covar_cell[,grep("nCount_RNA|percent\\.mito|coarse", colnames(df_covar_cell))])
+
+```
+
+```{r}
+# for each row, get the column with the highest value
+vec_idx_maxCol = apply(mat_covar_cor_allcells, 1, which.max)
+
+table(colnames(mat_covar_cor_allcells)[vec_idx_maxCol])
+
+   #      cluster_perslab_coarseCholangiocytes        cluster_perslab_coarseDendritic.cells 
+   #                                        23                                            6 
+   #   cluster_perslab_coarseEndothelial.cells cluster_perslab_coarseHepatic.stellate.cells 
+   #                                        49                                           14 
+   #  cluster_perslab_coarseHepatic.stem.cells            cluster_perslab_coarseHepatocytes 
+   #                                         3                                           11 
+   #         cluster_perslab_coarseMacrophages          cluster_perslab_coarseNK.like.cells 
+   #                                        40                                           15 
+   #        cluster_perslab_coarsePlasma.cells     cluster_perslab_coarseT.cells.alpha.beta 
+   #                                         4                                           31 
+   # cluster_perslab_coarseT.cells.gamma.delta                                   nCount_RNA 
+   #                                         6                                           39 
+   #                              percent.mito 
+   #                                        12 
+```
+
+
+```{r}
+vec_mods_perslab_keep = rownames(mat_covar_cor_allcells)[!colnames(mat_covar_cor_allcells)[vec_idx_maxCol] %in% vec_covar_cell_filter]
+length(vec_mods_perslab_keep)
+# [1] 202
+```
+
+filter modules (overwrite existing filter columns)
+
+```{r}
+
+dt_geneMod_perslab[,module_filter:=ifelse(gsub("perslab_","", module_filter) %in% ..vec_mods_perslab_keep, module_filter,NA),]
+
+dt_geneMod_perslab[,cell_cluster_filter:=ifelse(is.na(module_filter), NA, cell_cluster_filter),]
+```
+
+
+<!-- likewise, at the donor level, we will filter out modules which are more driven by the cells coming from a particular donor than by relevant donor characteristics  (lobular_inflammation_grade, fibrosis grade, BMI?) -->
+
+<!-- ```{r} -->
+<!-- dt_covar_donor_embed = data.table(df_covar_donor, mat_embed) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- dt_embed_donor_embed_avg = dt_covar_donor_embed[,lapply(.SD, mean), by=seuratObj$sample_ID] -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- df_embed_donor_embed_avg <- setDF(dt_embed_donor_embed_avg) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- mat_covar_cor_donors = cor( -->
+<!--   df_embed_donor_embed_avg[,gsub("\\.","",colnames(df_embed_donor_embed_avg)) %in% gsub("perslab_", "", dt_geneMod_perslab$module_filter)], -->
+<!--   df_embed_donor_embed_avg[,grep("_grade|BMI|sample_", colnames(df_embed_donor_embed_avg))]) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- vec_idx_maxCol_2 = apply(mat_covar_cor_donors, 1, which.max) -->
+
+<!-- table(colnames(df_embed_donor_embed_avg[,grep("_grade|BMI|sample_", colnames(df_embed_donor_embed_avg))])[vec_idx_maxCol_2]) -->
+<!-- ``` -->
+
+
+
+merge highly overlapping single cell modules across cell types
+
+# time Rscript /nfsdata/projects/jonatan/tools/sc-analysis/wgcna-src/geneNetworkScripts/gene_module_merge2.R  --path_df_NWA /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz --colGeneNames genes --colModule module_filter --colCellClust cell_cluster_filter --colGeneWeights pkMs --cellClusters_keep 'c("T-cells-alpha-beta", "NK-like-cells", "Endothelial-cells", "T-cells-gamma-delta", "Macrophages", "Cholangiocytes", "Hepatocytes","Hepatic-stellate-cells", "Dendritic-cells", "Hepatic-stem-cells")' --minPropIntersect  0.7 --minWeightedCor  0.5 --minPropIntersect_iter_increase  1.01 --maxIter 25 --corMethod pearson --mergeOrPrune prune --dirOut /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut merge2 --doPlot  T --RAMGbMax 250 &> ./log/log_liver_merge201001.txt
+
+<!-- re-load new geneMod table after pruning overlapping modules -->
+
+<!-- ```{r} -->
+<!-- dt_geneMod_perslab <-fread(file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz") -->
+<!-- ``` -->
+
+```{r}
+colCellClust <- "cell_cluster_merged"
+colModule <- "module_merged"
+```
+
+<!-- ```{r} -->
+<!-- dt_geneMod_moylan2013[,cell_cluster_merged:=cell_cluster] -->
+<!-- dt_geneMod_moylan2013[,module_merged:=module] -->
+<!-- ``` -->
+
+
+```{r}
+dt_geneMod_perslab[,cell_cluster_merged:=cell_cluster_filter]
+dt_geneMod_perslab[,module_merged:=module_filter]
+```
+
+```{r}
+dt_geneMod_gerhard2018[,cell_cluster_merged:=cell_cluster]
+dt_geneMod_gerhard2018[,module_merged:=paste0("gerhard2018_",module)]
+```
+
+```{r}
+length(unique(dt_geneMod_perslab$module_filter)[nchar(unique(dt_geneMod_perslab$module_filter))>0])
+# [1] 202
+length(unique(dt_geneMod_perslab$module_merged)[nchar(unique(dt_geneMod_perslab$module_merged))>0])
+# [1] 202
+```
+
+203 single cell modules after filtering 
+
+## write files to disk
+
+```{r}
+fwrite(dt_geneMod_perslab, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz", compress="gzip")
+```
+
+```{r}
+fwrite(dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz", compress="gzip")
+```
+
+<!-- ```{r} -->
+<!-- fwrite(dt_geneMod_moylan2013, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.csv.gz", compress="gzip") -->
+<!-- ``` -->
+
+next: liver_module_preservation.Rmd

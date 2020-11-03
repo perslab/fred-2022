@@ -26,7 +26,7 @@ params:
 
 # Setup
 
-## Set options
+## Set options and constants
 
 ```{r}
 options(stringsAsFactors = F, 
@@ -35,9 +35,7 @@ options(stringsAsFactors = F,
         verbose=F,
         mc.cores=40 # for parallel computation
         ) 
-```
 
-```{r}
 randomSeed = 12345
 set.seed(randomSeed)
 
@@ -289,7 +287,7 @@ saveMeta(savefnc = cowplot::save_plot,
 # 
 # ```
 
-Score the cell clusters using an algorithm
+Score the cell clusters using DE genes and an algorithm
 
 ```{r}
 path_macparland_ESM_2 = here("data", "macparland-nature-2018-ESM-2.xlsx")
