@@ -24,6 +24,7 @@ params:
 #     toc_float: yes
 ---
 
+THIS IS OUT OF DATE
 >>> REVISE <<<
 this script
 * subsets the Seurat integrated single-cell data (Macrophages, hepatocytes, stellate cells, cholangiocytes..)
@@ -49,18 +50,18 @@ library("here")
 library("gerr")
 library("GO.db")
 library("gage") # provides GO genesets
-```
 
-## source utility functions
 
-```{r}
+# source utility functions
+
+
 source(here("/perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
-```
 
-## Set options
 
-```{r}
+# Set options
+
+
 options(stringsAsFactors = F, 
         use="pairwise.complete.obs", 
         warn=1, 
@@ -76,11 +77,11 @@ setDTthreads(threads = NULL,
 getDTthreads()
 
 #options(datatable.WhenJisSymbolThenCallingScope=TRUE)
-```
 
-## Set constants
 
-```{r}
+# Set constants
+
+
 randomSeed = 12345
 set.seed(randomSeed)
 
@@ -103,11 +104,11 @@ flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
 
 alpha =  0.25 # for GERR calling glmnet elasticnet, alpha \in [0,1], alpha==0 => ridge regression, alpha==1 => LASSO regression. Defaults to 0.5
         # ?gerr::regression_selected_pathways
-```
 
-generic project constants 
 
-```{r}
+#generic project constants 
+
+
 
 prefixData = "liver_perslab_int"
 prefixRun = "seurat_7"
@@ -151,7 +152,7 @@ vec_allGenes <- readRDS(here("data","liver_perslab_int_genesBackground.RDS"))
 gene modules 
 
 ```{r}
-dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_merged_200325.csv.gz")
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz")
 head(dt_geneMod_perslab)
 ```
 
@@ -191,8 +192,12 @@ seuratObj_sub <- subset(seuratObj, subset=cluster_perslab_coarse == celltype)
 vec_genesPlot = c("S100A8","S100A9","S100A12") # top genes in "honeydew3" macrophage module
 ```
 
+
 ```{r}
-p1 <- VlnPlot(object = seuratObj, features = vec_genesPlot,  group.by = "cluster_perslab")
+p1 <- VlnPlot(object = seuratObj, 
+              features = vec_genesPlot,  
+              group.by = "cluster_perslab")
+
 ggsave(plot=p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_calgranulin_vlnplots_perslab_cluster_perslab.pdf")))
 ```
 
@@ -200,6 +205,18 @@ ggsave(plot=p1, filename = here("plots", paste0(prefixData, "_", prefixRun, "_ca
 p2 <- VlnPlot(object = seuratObj_macParland, features = vec_genesPlot,  group.by = "Cluster_annot")
 ggsave(plot=p2, filename = here("plots", paste0(prefixData, "_", prefixRun, "_calgranulin_vlnplots_macparland_Cluster_annot.pdf")))
 ```
+
+
+
+```{r}
+
+
+# vec_modsPlot = c("deepskyblue", unique(dt_geneMod_perslab[(nchar(module_fibrosis_gerhard2018)>0 | nchar(module_fibrosis_gerhard2018)>0) & cell_cluster == "Macrophages", module_renamed])) # top genes in "honeydew3" macrophage module
+```
+
+
+
+
 
 ### look at gerhard2018_coral across all perslab 
 

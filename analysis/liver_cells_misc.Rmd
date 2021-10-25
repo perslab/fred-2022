@@ -1,0 +1,760 @@
+---
+title: 'Liver - miscellenaneous analyses'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# Setup
+
+## Load packages
+
+```{r}
+
+# workaround until we fix the project library AND the setting of environment variables
+.libPaths(new=c(.libPaths(),"/nfsdata/tools/R/envs/shared/4.0_20201209"))
+
+library("here")
+library("data.table")
+library("Matrix")
+library("parallel")
+
+library("Seurat")#, lib.loc = "/nfsdata/tools/R/envs/rkm916/x86_64-redhat-linux-gnu-library/4.0/")
+
+library("dplyr")
+library("ggplot2")
+library("ggrepel")
+library("igraph")
+library("oaqc")
+library("tidyr")
+library("tidygraph")
+library("ggraph")
+library("wesanderson")
+library("colorspace")
+library("patchwork")
+library("ggsci")
+library("ggpubr")
+library("graphlayouts")
+library("pheatmap")
+
+library("eulerr")
+library("lattice")
+# https://github.com/yanwu2014/swne
+library("NNLM")
+library("swne")
+
+library("Biobase")
+# source utility functions
+source(here("perslab-sc-library", "utility_functions.R"))
+source(here("perslab-sc-library", "functions_sc.R"))
+
+# Set options
+
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+
+#options(datatable.WhenJisSymbolThenCallingScope=TRUE)
+
+# Set constants
+
+randomSeed = 12345
+set.seed(randomSeed)
+npcs = 60
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+
+# generic project constants 
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneNames = "genes"
+colGeneWeights = "pkMs"
+```
+
+```{r}
+fontSize_plotTitle = 14
+
+fontSize_label_lg = 9
+fontSize_label_md = 7
+fontSize_label_sm = 4
+
+
+fontSize_axisTitle_lg = 24
+fontSize_axisTitle_md = 20
+fontSize_axisTitle_sm = 16
+
+fontSize_axisText_xlg = fontSize_legend_xlg = 20
+fontSize_axisText_lg = fontSize_legend_lg = 15
+fontSize_axisText_md = fontSize_legend_md = 12
+fontSize_axisText_sm = fontSize_legend_sm = 9
+fontSize_axisText_xsm = fontSize_legend_xsm = 7
+
+
+alpha_unicode = "\u03B1"
+Beta_unicode = "\u03B2"
+gamma_unicode = "\u03B3"
+delta_unicode = "\u03B4"
+
+
+
+vec_celltype_abbrev = c("Chol", 
+                        "DC", 
+                        "Endo", 
+                        "HSC", 
+                        "Stem", 
+                        "Hep", 
+                        "Mac", 
+                        "NK", 
+                        paste0(alpha_unicode, Beta_unicode, "T"),#bquote(alpha*Beta~"T"),#expression(paste(alpha, beta, "T")), 
+                        paste0(gamma_unicode,delta_unicode,"T"),#bquote(gamma*delta~"T"),#expression(paste(gamma*delta,~"T")),
+                        "Bcell",
+                        "Plasma")
+
+
+names(vec_celltype_abbrev) = c("Cholangiocytes","Dendritic-cells", "Endothelial-cells","Hepatic-stellate-cells","Hepatic-stem-cells","Hepatocytes","Macrophages","NK-like-cells",paste0("T-cells-",alpha_unicode, Beta_unicode),paste0("T-cells-",gamma_unicode,delta_unicode),"B-cells-mature","Plasma-cells")
+```
+
+
+## load data
+
+```{r}
+seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz"))
+```
+
+```{r}
+path_seuratObj_macparland <- here("data", "macparland_seurat_obj3.RDS")
+
+seuratObj_macparland <- load_obj(path_seuratObj_macparland)
+```
+
+Load modules dataframes
+
+```{r}
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz")
+#head(dt_geneMod_perslab)
+
+dt_geneMod_gerhard <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz")
+
+```
+
+## Analyses
+
+### check CKB, GLUL, GLS and mir14 in perslab vs macparland
+
+```{r}
+seuratObj_macparland$sample_ID <- seuratObj_macparland$Sample
+```
+
+```{r}
+seuratObj$dataset <- "perslab"
+seuratObj_macparland$dataset <- "macparland"
+```
+
+```{r}
+seuratObj_merged = merge(x=seuratObj, 
+                         y=seuratObj_macparland,
+                         add.cell.ids = c("perslab", "macparland"), 
+                         project = "liver")
+```
+
+## Cell-cycle analysis 
+See https://satijalab.org/seurat/cell_cycle_vignette.html
+
+```{r}
+# list_cellCycleGenes <- lapply(paths_cellCycleGenes, function(x) load_obj(x)[,1])
+# names(list_cellCycleGenes) <- names(paths_cellCycleGenes)
+
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase 
+list_cellCycleGenes <- list()
+list_cellCycleGenes[["s.genes"]] <- cc.genes$s.genes
+list_cellCycleGenes[["g2m.genes"]] <- cc.genes$g2m.genes
+```
+
+Compute cell cycle scores using provided genesets
+
+```{r}
+# First get rid of zero-expressed genes
+# seuratObj <- Seurat::CreateSeuratObject(counts=GetAssayData(seuratObj, slot= "counts"), 
+#                                              project= prefixData, 
+#                                              assay = "RNA", 
+#                                              min.cells = 5, # filtering genes is the only reason to make a new Seurat object
+#                                              min.features = 0,
+#                                              meta.data = seuratObj@meta.data)
+
+seuratObj_merged <- Seurat::CellCycleScoring(object = seuratObj_merged, 
+                               s.features = if (!is.null(list_cellCycleGenes[["s.genes"]])) list_cellCycleGenes[["s.genes"]] else NULL, 
+                               g2m.features = if (!is.null(list_cellCycleGenes[["g2m.genes"]])) list_cellCycleGenes[["g2m.genes"]] else NULL, 
+                              set.ident = F)
+
+
+seuratObj_merged$CC.Difference <- seuratObj_merged$S.Score - seuratObj_merged$G2M.Score
+```
+
+
+```{r}
+DefaultAssay(seuratObj_merged) = "RNA"
+```
+
+```{r}
+seuratObj_merged <- Seurat::SCTransform(
+  seuratObj_merged, 
+  vars.to.regress = c("percent.mito", "CC.Difference"))
+```
+
+PCA and UMAP 
+
+```{r}
+seuratObj_merged %>% RunPCA(object = ., npcs = npcs, verbose = F, seed.use = randomSeed) %>% RunUMAP(object = ., dims=1:npcs,seed.use=randomSeed) -> seuratObj_merged
+```
+
+combine cluster annotation
+
+```{r}
+seuratObj_merged$cluster_coarse_merge <- ifelse(seuratObj_merged$dataset=="perslab", seuratObj_merged$cluster_perslab_coarse, seuratObj_merged$Cluster_annot_merged)
+```
+
+```{r}
+Idents(seuratObj_merged) = "cluster_coarse_merge"
+```
+
+
+```{r}
+FeaturePlot(object = seuratObj_merged, 
+            features=features,
+            cells = colnames(seuratObj_merged)[seuratObj_merged$cluster_coarse_merge=="Hepatocytes"],
+            split.by = "dataset") 
+```
+
+```{r}
+list_subset_idents = list(
+  "Hepatocytes"=c("Hepatocytes"),
+  "Macrophages"=c("Macrophages"),
+  "Hepatic-stellate-cells"=c("Hepatic-stellate-cells","Hepatic_stellate_cells"),
+  "Endothelial-cells"=c("Endothelial-cells","Endothelial_cells"),
+  "Cholangiocytes"=c("Cholangiocytes")
+)
+```
+
+```{r}
+features = c("CKB", "GLUL", "GLS")#, "mir14")
+```
+
+```{r}
+A = lapply(list_subset_idents, function(subset_idents) {
+  seuratObj_sub = subset(seuratObj_merged, idents = subset_idents)
+  try(DE_MAST_RE_seurat(
+    object=seuratObj_sub,
+    random_effect.var="sample_ID",
+    ident.1="perslab",
+    ident.2 = "macparland",
+    group.by = "dataset",
+    logfc.threshold = 0.01,
+    assay=NULL,
+    slot="data",
+    features = features,
+    min.pct = 0.01,
+    max.cells.per.ident = 5000,
+    random.seed = randomSeed,
+    latent.vars = NULL,
+    n_cores=NULL,
+    verbose=TRUE))
+})
+
+```
+
+```{r}
+df_features = list_df_DE[[5]][rownames(list_df_DE[[5]]) %in% features,]
+```
+
+
+```{r}
+list_df_DE_2 = lapply(names(list_subset_idents), function(key) {
+  subset_idents = list_subset_idents[[key]]
+  seuratObj_sub = subset(seuratObj_merged, idents = subset_idents)
+  df_out = try(Seurat::FindMarkers(
+      object=seuratObj_sub,
+      test.use="MAST",
+      ident.1="perslab",
+      ident.2 = "macparland",
+      group.by = "dataset",
+      logfc.threshold = 0.01,
+      assay=NULL,
+      slot="data",
+      features = features,#if (key!="Hepatocytes") features[1:3] else features[c(1,3)],
+      min.pct = 0.01,
+      max.cells.per.ident = 5000,
+      random.seed = randomSeed,
+      latent.vars = NULL,
+      verbose=TRUE)) 
+  # list_df = Filter(f= function(df) class(df)=="data.frame", x=list_df)
+  # df_out = Reduce(f=rbind, x=list_df)
+  if (class(df_out)=="data.frame") df_out$cluster = key
+  return(df_out)
+})
+
+names(list_df_DE_2) = names(list_subset_idents)
+```
+
+
+
+```{r}
+df_DE_2 = Reduce(rbind,list_df_DE_2[3:5])
+df_DE_2$p_val_adj <- p.adjust(df_DE_2$p_val, method="fdr")
+df_DE_2 <- df_DE_2[order(df_DE_2$p_val, -df_DE_2$avg_logFC),]
+
+df_DE_2 = data.frame("gene"=rownames(df_DE_2),df_DE_2)
+```
+
+```{r}
+openxlsx::write.xlsx(df_DE_2, file = here("output", paste0(prefixData,"_", prefixRun, "_DEgenes_perslab_macparland_", flagDate, ".xlsx")))
+```
+
+Are macrophage modules specific to particular patients?
+
+```{r}
+VlnPlot(seuratObj, features = paste0("Macrophages_",1:4), group.by = "sample_ID")
+```
+
+why is M-Mac-2 specific to a subset of patients?
+
+* How is module activity computed?
+* M-Mac-2 corresponds more or less to a macrophage population. How specific is it?
+
+```{r}
+Idents(seuratObj) <- "cluster_perslab_coarse"
+seuratObj_macs <- subset(seuratObj, idents="Macrophages")
+```
+
+```{r}
+VlnPlot(seuratObj_macs, group.by = "cluster_perslab", features = paste0("Macrophages_",1:4))
+```
+
+Top Reactome terms for M-Mac-2:
+Respiratory electron transport
+Respiratory electron transport, ATP synthesis by chemiosmotic coupling, and heat production by uncoupling proteins.
+
+Top KEGG terms for M-Mac-2: Oxidative phosphorylation
+
+```{r}
+VlnPlot(seuratObj, features = c("nCount_RNA", "nFeature_RNA", "percent.mito", "percent.ribo"), group.by = "sample_ID")
+```
+
+```{r}
+dt_covars_tech_macs = seuratObj_macs@meta.data[,c("Macrophages_2", "nCount_RNA", "nFeature_RNA", "percent.mito", "percent.ribo", "CC.Difference")]
+
+cor(dt_covars_tech_macs)
+```
+
+```{r}
+dt_covars_patient_macs = seuratObj_macs@meta.data[,c("Macrophages_2", colnames(seuratObj_macs@meta.data)[c(39:43,45:46)])]
+
+mat_covars_patient_macs = apply(dt_covars_patient_macs,2,as.numeric)
+
+dt_covars_patient_macs_numeric <- data.table(mat_covars_patient_macs)
+dt_covars_patient_macs_numeric$sample_ID <- seuratObj_macs$sample_ID
+dt_covars_patient_macs_numeric_mean <- dt_covars_patient_macs_numeric[,lapply(.SD, mean), by=sample_ID, .SDcols=colnames(mat_covars_patient_macs)]
+```
+
+```{r}
+cor(dt_covars_patient_macs_numeric_mean[,2:9])
+```
+
+genes to stain for as a complement to the MS (probably for a revision). 
+check the expression of the individual HLA genes in Gerhard 
+and in our macrophage subclusters (compared to MacParland)?:
+
+Gerhard 2018 bulk expression data 
+
+```{r}
+dt_datExpr <- fread(here("data", "liver_gerhard2018_norm.counts.csv.gz"))
+
+mat_datExpr <- as.matrix(dt_datExpr[,-1])
+rownames(mat_datExpr) = dt_datExpr$gene
+```
+
+### patient metadata
+
+```{r}
+dt_metadata <- fread(here("data", "liver_gerhard2018_patient_metadata_qc.csv.gz"))
+```
+
+```{r}
+vec_genes_HLA = c("HLA-DRA", "HLA-DQA2", "HLA-DQB2")
+```
+
+```{r}
+all.equal(colnames(mat_datExpr), dt_metadata$run_accession)
+# [1] TRUE
+```
+
+
+```{r}
+mat_datExpr[vec_genes_HLA,] %>% t %>% scale(., center=FALSE, scale=apply(.,2,sd,na.rm=T)) -> mat_datExpr_scaled_sub_t
+```
+
+```{r}
+dt_comb = cbind(dt_metadata, mat_datExpr_scaled_sub_t)
+```
+
+```{r}
+colnames(dt_comb) = gsub("-","_",colnames(dt_comb))
+```
+```{r}
+library(colorspace)
+```
+
+boxplots
+
+```{r}
+vec_conditions = c("STEATOSIS", "Fibrosis", "Lob Inflam")
+vec_colors_plot = wes_palette("Darjeeling1", n =length(vec_conditions))
+names(vec_colors_plot) = vec_conditions
+
+list_row_boxplot = lapply(vec_conditions, function(condition) {
+  dt_boxplot <- dt_comb[,.(DCL.Patient.ID,Diagnosis,HLA_DRA,HLA_DQA2,HLA_DQB2)]
+  filter_condition = quote(grepl(paste0(condition,"|NORMAL"), dt_boxplot$Diagnosis))
+  dt_boxplot <- dt_boxplot[eval(filter_condition),]
+  #dt_boxplot <- dt_boxplot[!grepl("Fibrosis 3/4", Diagnosis)]
+  dt_boxplot <- melt(dt_boxplot,id.vars = c("DCL.Patient.ID", "Diagnosis"))
+  dt_boxplot$Diagnosis <- ifelse(dt_boxplot$Diagnosis=="NORMAL", "NORMAL", condition)
+  colnames(dt_boxplot)[c(3,4)] <- c("gene","expression")
+  # dt_boxplot$Diagnosis = factor(dt_boxplot$Diagnosis, levels = c("NORMAL","Fibrosis 3","Fibrosis 3/4","Fibrosis 4"), ordered=TRUE)
+  dt_boxplot$Diagnosis = factor(dt_boxplot$Diagnosis, levels = c("NORMAL",condition), ordered=TRUE)
+  
+  vec_colors_plot_condition = rep(vec_colors_plot[condition], length(unique(dt_boxplot$Diagnosis)))
+    
+  names(vec_colors_plot_condition) = levels(dt_boxplot$Diagnosis)
+    
+  list_plots = lapply(1:length(vec_genes_HLA), function(i) {
+    gene_plot = gsub("-","_",vec_genes_HLA)[i]
+    #j must be provided when with=FALSE 
+    dt_boxplot_sub = dt_boxplot[gene==gene_plot,colnames(dt_boxplot),with=F,]
+    
+    
+    p_box = ggplot(
+      data=dt_boxplot_sub, mapping=aes(x=Diagnosis, y=expression, fill=Diagnosis)) +
+      geom_boxplot()  +
+      scale_fill_manual(values=vec_colors_plot_condition) +
+      geom_jitter(width=0.1,alpha=0.5) +
+      ggtitle(vec_genes_HLA[i]) +
+      theme(
+          legend.position = "none",
+          axis.text.x = element_text(size = fontSize_axisText_sm, angle=90), 
+          axis.text.y = element_text(size = fontSize_axisText_sm), 
+          axis.line = element_blank(), 
+          axis.ticks = element_blank(), 
+          axis.title.x = element_blank(),
+          axis.title.y = element_text(size = fontSize_axisTitle_sm),
+          panel.background = element_blank(), 
+          plot.background = element_blank(), 
+          panel.grid = element_blank(),
+          legend.title=element_blank(),
+          legend.text = element_text(size=fontSize_legend_lg),
+          aspect.ratio = 1.5) + 
+      labs(y="gene expression (scaled)")
+    
+  })
+  patchwork::wrap_plots(... = list_plots, 
+                            ncol = length(list_plots)
+                            )
+})
+
+grid_boxplot = patchwork::wrap_plots(... = list_row_boxplot, 
+                            nrow = length(list_row_boxplot)
+                            )
+
+ggsave(plot = grid_boxplot, filename = paste0(dirWGCNA_plots,prefixData,"_", prefixRun,  "_HLAgenes_gerhard_boxplots_", params$date,".pdf"), height=15, width =15)
+```
+
+# prep for regression 
+```{r}
+list_dt_comb = list()
+list_dt_comb[["steatosis"]] = dt_comb[Diagnosis %in% c("NORMAL", "STEATOSIS 2", "STEATOSIS 3"),]
+list_dt_comb[["steatosis"]][,condition:=ifelse(Diagnosis=="NORMAL",0,1)]
+list_dt_comb[["steatosis"]][Diagnosis=="STEATOSIS 3","condition"] <- 2
+
+list_dt_comb[["lobinflam"]] = dt_comb[Diagnosis %in% c("NORMAL","Lob Inflam 1", "Lob Inflam 2"),]
+list_dt_comb[["lobinflam"]][,condition:=ifelse(Diagnosis=="NORMAL",0,1)]
+list_dt_comb[["lobinflam"]][Diagnosis=="Lob Inflam 2","condition"] <- 2
+
+list_dt_comb[["fibrosis"]] = dt_comb[Diagnosis %in% c("NORMAL","Fibrosis 3"),]
+list_dt_comb[["fibrosis"]][,condition:=ifelse(Diagnosis=="Fibrosis 3",1,0),]
+# binary, so factor. NB: This will change the lm variable for case  to condition1
+list_dt_comb[["fibrosis"]]$condition <- as.factor(dt_comb_fibrosis$condition)
+
+```
+
+```{r}
+# https://stats.stackexchange.com/questions/242404/how-does-the-boot-package-in-r-handle-collecting-bootstrap-samples-if-strata-are
+set.seed(randomSeed)
+R=9999
+
+system.time(list_list_bootOut <- lapply(names(list_dt_comb), function(condition) {
+  
+  print(paste0("condition: ", condition))
+  
+  dt_model_tmp <- setDF(list_dt_comb[[condition]])
+
+  lapply(gsub("-","_",vec_genes_HLA), function(gene_HLA) {
+    
+    print(paste0("gene_HLA: ", gene_HLA))
+    
+    fnc_stat = function(data,indices) {
+         lm(
+           data = data[indices,], 
+           formula = formula(paste0(gene_HLA, "~ SEX + BMI_surg + Age + condition"))) %>% coefficients()
+    }
+    
+    bootOut = "error"
+    class(bootOut) = "try-error"
+    while (class(bootOut)=="try-error") {
+      boot_out = try({
+        set.seed(randomSeed+1)
+        bootOut <- boot::boot(data=dt_model_tmp, 
+                               statistic = fnc_stat,
+                               strata = as.factor(dt_model_tmp$Diagnosis),
+                               R = R,
+                               sim = "ordinary",
+                               stype = "i",
+                               parallel = getOption("boot.parallel"),
+                               ncpus = getOption("boot.ncpus")
+                              ) 
+      })
+    }
+    return(bootOut)  
+    
+  }) -> list_bootOut 
+  names(list_bootOut) = vec_genes_HLA
+  return(list_bootOut)
+  })
+)
+
+names(list_list_bootOut) <- names(list_dt_comb)
+```
+
+extract coefficient tables 
+
+get p-value, std error and confidence intervals from the $t
+
+```{r}
+list_dt_bootOut_stats <- lapply(names(list_list_bootOut), function(condition) {
+  list_bootOut = list_list_bootOut[[condition]]
+  mat_bootOut_stats <- t(sapply(names(list_bootOut), function(gene_HLA) {
+    bootOut = list_bootOut[[gene_HLA]]
+    vec_out = tryCatch({
+      mat_boot_replicates = bootOut$t
+      colnames(mat_boot_replicates) = names(bootOut$t0)
+      idx_col = grep("condition",names(bootOut$t0))
+      # compute bootstrap statistics
+      bootBias = mean(mat_boot_replicates[,idx_col]) - bootOut$t0[idx_col]
+      bootMean = mean(mat_boot_replicates[,idx_col]) 
+      bootSE = sd(mat_boot_replicates[,idx_col])
+      bootMed = median(mat_boot_replicates[,idx_col])
+      
+      # compute bootstrap percentile intervals 
+      bootciOut = boot.ci(bootOut, index = 5)
+      # idx_lower = round((R+1)*0.025,0)
+      # idx_upper = round((R+1)*0.975,0)
+      # confInt_lower_boot = sort(mat_boot_replicates[,idx_col])[idx_lower]
+      # confInt_upper_boot = sort(mat_boot_replicates[,idx_col])[idx_upper]
+      confInt_lower_percentile = bootciOut$percent[4]
+      confInt_upper_percentile = bootciOut$percent[5]
+      # compute Normal-theory intervals
+      # confInt_lower_norm = qnorm(p = 0.025, mean = bootMean, sd = bootSE, lower.tail = T)
+      # confInt_upper_norm = qnorm(p = 0.975, mean = bootMean, sd = bootSE, lower.tail = T)
+      confInt_lower_norm = bootciOut$normal[2]
+      confInt_upper_norm = bootciOut$normal[3]
+      
+      c("estimate_original"=bootOut$t0[idx_col],
+       #"bootBias"=bootBias,
+       "bootSE"=bootSE,
+       "estimate_bootMean"=bootMean,
+       "estimate_bootMed" = bootMed,
+       "confInt_lower_percentile"=confInt_lower_percentile,
+       "confInt_upper_percentile"=confInt_upper_percentile,
+       "confInt_lower_norm"=confInt_lower_norm,
+       "confInt_upper_norm"=confInt_upper_norm,
+       "p.value_percentile" = ifelse(bootOut$t0[idx_col]>0,  max(1,sum(mat_boot_replicates[,idx_col]<=0))/R, max(1, sum(mat_boot_replicates[,idx_col]>=0))/R),
+       "p.value_norm" = pnorm(q=abs(bootMean), mean=0, sd=bootSE, lower.tail = F))
+    }, error = function(err) {
+      warning(paste0(gene_HLA, ": ", err))
+      c("estimate_original"=NA_real_,
+       #"bootBias"=NA_real_,
+       "bootSE"=NA_real_,
+       "estimate_bootMean"=NA_real_,
+       "estimate_bootMed" = NA_real_,
+       "confInt_lower_percentile"=NA_real_,
+       "confInt_upper_percentile"=NA_real_,
+       "confInt_lower_norm"=NA_real_,
+       "confInt_upper_norm"=NA_real_,
+        "p.value_percentile" = NA_real_,
+       "p.value_norm"=NA_real_)
+      })
+    
+  }))
+  dt_bootOut_stats = data.table("condition"=condition, 
+                                "gene_HLA"=names(list_bootOut), 
+                                mat_bootOut_stats)
+  
+  #dt_bootOut_stats[,p.value_percent_BH:=p.adjust(p.value_percent,method = params$pAdjMethod)]
+  #dt_bootOut_stats[,p.value_born_BH:=p.adjust(p.value_norm, method = params$pAdjMethod)]
+  colnames(dt_bootOut_stats) = gsub("\\.condition\\d*$", "", colnames(dt_bootOut_stats)) # for some reason, it appends ".condition" to these column names
+  return(dt_bootOut_stats)
+})
+
+names(list_dt_bootOut_stats) <- names(list_dt_model_sub)
+
+dt_bootOut_stats = data.table::rbindlist(list_dt_bootOut_stats)
+
+#dt_bootOut_stats[,gene_HLA := gsub("_","-", gene_HLA)]
+```
+
+
+## Check for PPI enrichment in figure 3 heatmap overlapping module genes
+
+```{r}
+dt_geneMod_perslab$module_renamed %>% unique -> vec_mods
+
+vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
+
+vec_mods_ribo_overlap = c(
+  "Endothelial-cells_2", 
+  "T-cells-gamma-delta_1", 
+  "Dendritic-cells_2",
+  "Hepatic-stem-cells_1",
+  "Plasma-cells_1",
+  "B-cells-mature_1",
+  "Macrophages_4",
+  "T-cells-alpha-beta_1",
+  "Cholangiocytes_2",
+  "Hepatic-stellate-cells_3"
+  )
+
+all(vec_mods_ribo_overlap %in% vec_mods)
+```
+
+```{r}
+list_genelists_ribo_overlap = lapply(vec_mods_ribo_overlap, function(mod) {
+  condition = quote(dt_geneMod_perslab$module_renamed==mod)
+  vec_mod_genes = dt_geneMod_perslab[eval(condition), ..colGeneNames, ][[1]] %>% unique
+  # filter out moduke genes absent in expression data
+  #vec_idxRow <- match(vec_mod_genes, dt_datExpr[,gene])
+  #vec_mod_genes <- vec_mod_genes[!is.na(vec_idxRow)]
+  return(vec_mod_genes)
+})
+
+names(list_genelists_ribo_overlap) = vec_mods_ribo_overlap
+```
+
+
+```{r}
+  
+for (i in 1:4) {
+ 
+names(list_genelists_ribo_overlap)=   gsub(pattern=c("alpha-", "beta", "gamma-", "delta")[i], 
+  replacement=c(alpha_unicode, Beta_unicode, gamma_unicode, delta_unicode)[i],
+  x=names(list_genelists_ribo_overlap))
+
+}
+
+vec_mod_number = gsub("\\D","",names(list_genelists_ribo_overlap))
+names(list_genelists_ribo_overlap) = paste0("M-", vec_celltype_abbrev[match(gsub("_\\d$","",names(list_genelists_ribo_overlap)), names(vec_celltype_abbrev))], "-", vec_mod_number)
+```
+
+```{r}
+vec_genes_all = unlist(list_genelists_ribo_overlap, use.names=F) %>% unique
+```
+
+```{r}
+vec_gene_module_membership = sapply(vec_genes_all, function(gene) sapply(list_genelists_ribo_overlap, function(genelist) {gene %in% genelist}) %>% sum)  %>% sort(.,decreasing = T)
+
+vec_genes_most_shared = names(vec_gene_module_membership)[vec_gene_module_membership>5]
+
+vec_genes_most_shared %>% kength
+# [1] 77
+```
+
+PPI analysis
+
+```{r}
+library("STRINGdb")
+```
+
+```{r}
+data_organism = "hsapiens"
+```
+
+```{r}
+if (data_organism == "hsapiens") STRINGdb_species <- 9606 else if (data_organism == "mmusculus") STRINGdb_species <- 10090
+```
+
+```{r}
+ppi <- data.frame(gene = vec_genes_most_shared) # extract the genes with the corresponding color to dataframe
+modulePPIrow <- c('p.value' = 1, 'expected.interactions' = NA)
+
+# generate a STRINGdb object instance
+string_db <- STRINGdb$new(version="11",
+                          species = STRINGdb_species,
+                          score_threshold=200, #threshold for the combined scores of the interactions, such that any interaction below that threshold is not loaded in the object (by default the score threshold is set to 400).
+                          input_directory="")
+
+example1_mapped <- string_db$map(ppi, 'gene', removeUnmappedRows = TRUE ) # Check the dataframe genes'
+
+hits <- example1_mapped$STRING_id
+
+string_db$plot_network( hits )
+
+modulePPIrow['p.value'] = string_db$get_ppi_enrichment(hits)$enrichment
+
+modulePPIrow['expected.interactions'] = string_db$get_ppi_enrichment(hits)$lambda
+
+```
+
+do GO analysis
+
+```{r}
+enrichment <- string_db$get_enrichment( hits )
+head(enrichment, n=20)
+```
+
+```{r}
+openxlsx::write.xlsx(enrichment, here("output", paste0(prefixData,"_", prefixRun,  "_ribo_PPI_GO_results_", params$date,".xlsx")))
+```
+

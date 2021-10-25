@@ -23,6 +23,8 @@ params:
 #     toc_depth: 3
 #     toc_float: yes
 ---
+# OUT OF DATE / NOT CONSISTENT
+(looks like perslab processing was copy/pasted but then not converted to MacParland)
 
 # Setup
 

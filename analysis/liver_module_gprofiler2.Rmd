@@ -94,7 +94,7 @@ dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/ta
 
 
 ```{r}
-dt_geneMod_comb = data.table::rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerhard2018))
+dt_geneMod_comb = data.table::rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerhard2018), use.names = T)
 #, dt_geneMod_moylan2013))
 
 ```
@@ -129,19 +129,28 @@ dt_geneMod_comb = data.table::rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerh
 
 
 ```{r}
-vec_mods_assoc = dt_geneMod_comb[nchar(module_fibrosis_gerhard2018) > 0 | nchar(module_lob_inflam_gerhard2018)>0 ,module_renamed] %>% unique
-vec_mods_assoc = vec_mods_assoc[nchar(vec_mods_assoc)>0]
+# vec_mods_assoc = dt_geneMod_comb[nchar(module_fibrosis_gerhard2018) > 0 | nchar(module_lob_inflam_gerhard2018)>0 ,module_renamed] %>% unique
+# vec_mods_assoc = vec_mods_assoc[nchar(vec_mods_assoc)>0]
+
+vec_mods_comb = dt_geneMod_comb[nchar(module_renamed)>0, module_renamed] %>% unique
+
+# list_vec_modGenes <- lapply(vec_mod_comb, function(module) {
+#   condition = dt_geneMod_comb[,module_renamed] == module #[[1]]
+#   dt_geneMod_comb %>% dplyr::filter(., condition) %>% dplyr::select(genes) %>% '[['(1)
+# })
+# 
+# names(list_vec_modGenes) <- vec_mod_comb
 ```
 
 ```{r}
-list_pkMs <- lapply(vec_mods_assoc, function(module) {
+list_pkMs <- lapply(vec_mods_comb, function(module) {
   vecOut <- dt_geneMod_comb[[colGeneWeights]][dt_geneMod_comb[[colModule]]==module]
   names(vecOut) <- dt_geneMod_comb[[colGeneNames]][dt_geneMod_comb[[colModule]]==module]
   vecOut <- vecOut[!is.na(names(vecOut))]
   vecOut <- sort(vecOut, decreasing = T)
   vecOut
 })
-names(list_pkMs)<-vec_mods_assoc
+names(list_pkMs)<-vec_mods_comb
 head(list_pkMs[[1]])
 ```
 

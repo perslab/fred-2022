@@ -1,0 +1,213 @@
+---
+title: 'Liver - compare NASH with Payen et al liver scRNA seq data'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# setup
+
+## Load packages
+
+```{r}
+
+library("Seurat")
+library("data.table")
+library("Matrix")
+library("parallel")
+library("dplyr")
+library("ggplot2")
+library("here")
+library("tidyr")
+# library("cluster")
+# library("parallelDist")
+
+# Set options
+
+
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+
+#options(datatable.WhenJisSymbolThenCallingScope=TRUE)
+
+
+# Set constants
+
+dir_payen = "/data/pub-others/payen-jhepr-2021/"
+randomSeed = 12345
+set.seed(randomSeed)
+
+npcs=40
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+prefixRun_WGCNA = "wgcna3"
+
+dirWGCNA_outs = "/projects/jonatan/pub-perslab/18-liver-wgcna/"
+dirWGCNA_plots = paste0(dirWGCNA_outs, "plots/" )
+dirWGCNA_RObjects = paste0(dirWGCNA_outs, "RObjects/" )
+dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
+
+colGeneWeights = "pkMs"
+colGeneNames = "genes"
+colModule = "module_renamed"
+colCellCluster = "cell_cluster_pres"
+```
+
+## load 
+
+```{r}
+#seuratObj_sub <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj_macroph.RDS.gz"))
+seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz"))
+```
+
+### payen seurat object with SCT normalized counts 
+
+```{r}
+path_seu_payen = paste0(dir_payen, "output/", "seu_SCT.qs")
+seuratObj_payen <- qs::qread(path_seu_payen)
+```
+
+```{r}
+path_geneMod_perslab <- paste0(dirWGCNA_tables,prefixData, "_",prefixRun_WGCNA,"_geneMod.csv.gz")
+dt_geneMod_perslab <- fread(path_geneMod_perslab)
+
+```
+
+### payen metadata
+
+```{r}
+df_HSC_markers = openxlsx::read.xlsx(paste0(dir_payen, "metadata/", "mmc5.xlsx"), sheet = 1)
+df_HSC1_markers = readxl::read_excel(paste0(dir_payen, "metadata/", "mmc6.xls"), sheet = 1)
+df_HSC2_markers = readxl::read_excel(paste0(dir_payen, "metadata/", "mmc6.xls"), sheet = 2)
+```
+
+```{r}
+vec_geneWeights_HSC1 = rev(1:nrow(df_HSC1_markers))
+vec_geneWeights_HSC1 = vec_geneWeights_HSC1/sum(vec_geneWeights_HSC1)
+vec_geneWeights_HSC2 = rev(1:nrow(df_HSC2_markers))
+vec_geneWeights_HSC2 = vec_geneWeights_HSC2/sum(vec_geneWeights_HSC2)
+
+names(vec_geneWeights_HSC1) = df_HSC1_markers[[1]]
+names(vec_geneWeights_HSC2) = df_HSC2_markers[[1]]
+```
+
+# modules
+```{r}
+
+vec_geneWeights_MHSC1 = dt_geneMod_perslab[module_renamed=="Hepatic-stellate-cells_1", "pkMs"][[1]]
+vec_geneWeights_MHSC1 = vec_geneWeights_MHSC1/sum(vec_geneWeights_MHSC1)
+names(vec_geneWeights_MHSC1) = dt_geneMod_perslab[module_renamed=="Hepatic-stellate-cells_1", "genes"][[1]]
+
+vec_geneWeights_MHSC2 = dt_geneMod_perslab[module_renamed=="Hepatic-stellate-cells_2", "pkMs"][[1]]
+vec_geneWeights_MHSC2 = vec_geneWeights_MHSC2/sum(vec_geneWeights_MHSC2)
+names(vec_geneWeights_MHSC2) = dt_geneMod_perslab[module_renamed=="Hepatic-stellate-cells_2", "genes"][[1]]
+
+vec_geneWeights_MHSC3 = dt_geneMod_perslab[module_renamed=="Hepatic-stellate-cells_3", "pkMs"][[1]]
+vec_geneWeights_MHSC3 = vec_geneWeights_MHSC3/sum(vec_geneWeights_MHSC3)
+names(vec_geneWeights_MHSC3) = dt_geneMod_perslab[module_renamed=="Hepatic-stellate-cells_3", "genes"][[1]]
+```
+
+```{r}
+list_vec_geneWeights = list(
+  "M-HSC-1"=vec_geneWeights_MHSC1,
+  "M-HSC-2"=vec_geneWeights_MHSC2,
+  "M-HSC-3"=vec_geneWeights_MHSC3,
+  "HSC1"= vec_geneWeights_HSC1,
+  "HSC2"= vec_geneWeights_HSC2)
+```
+
+# analysis
+
+```{r}
+seuratObj <- embed_genesets(
+  seuratObj, 
+  list_vec_geneWeights, 
+  slot="scale.data", 
+  assay="SCT_combat")
+```
+
+```{r}
+seuratObj_sub = subset(seuratObj, subset = cluster_perslab_coarse=="Hepatic-stellate-cells" & sample_ID != "266L")
+```
+
+```{r}
+npcs=15
+```
+
+```{r}
+seuratObj_sub %>% Seurat::FindVariableFeatures(.) %>% Seurat::ScaleData(.) %>% Seurat::RunPCA(., npcs=npcs, verbose=F, seed.use=randomSeed) %>% Seurat::RunUMAP(., dims=1:npcs, seed.use = randomSeed) -> seuratObj_sub
+```
+
+```{r}
+FeaturePlot(seuratObj_sub, features="HSC1")
+```
+
+```{r}
+FeaturePlot(seuratObj_sub, features="HSC2")
+```
+
+```{r}
+FeaturePlot(seuratObj_sub, features="M.HSC.1")
+```
+
+```{r}
+FeaturePlot(seuratObj_sub, features="M.HSC.2")
+```
+
+```{r}
+FeaturePlot(seuratObj_sub, features="M.HSC.3")
+```
+
+```{r}
+length(vec_geneWeights_HSC1)
+# [1] 59
+length(vec_geneWeights_HSC2)
+# [1] 71
+length(vec_geneWeights_MHSC2)
+# [1] 77
+intersect(names(vec_geneWeights_HSC1), names(vec_geneWeights_MHSC2))
+# [1] 11
+intersect(names(vec_geneWeights_HSC2), names(vec_geneWeights_MHSC2))
+# [1] 2
+```
+
+

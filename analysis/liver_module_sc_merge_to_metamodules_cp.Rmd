@@ -24,6 +24,7 @@ params:
 #     toc_depth: 3
 #     toc_float: yes
 ---
+DEPRECATED 
 
 # Setup
 
@@ -39,12 +40,13 @@ library("parallel")
 #library("tidyverse")
 #library("AUCell")
 library("here")
+library("ggplot2")
 library("boot")
 library("magrittr")
 library("WGCNA")
 library("cluster")
 # source utility functions
-
+library("umap")
 source(here("/perslab-sc-library", "utility_functions.R"))
 source(here("perslab-sc-library", "functions_sc.R"))
 
@@ -75,7 +77,7 @@ getDTthreads()
 randomSeed = 12345
 set.seed(randomSeed)
 flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
-
+npcs = 15
 #distmethod = "euclidian"
 hclustmethod = "average"
 
@@ -96,6 +98,11 @@ colModule = "module_renamed"
 colCellCluster = "cell_cluster_pres"
 # naming convention:
 # <prefixData>_<prefixRun>_<prefixOut>_<outputType>_<params>_<params>_..._<date>.pdf
+alpha_unicode = "\u03B1"
+Beta_unicode = "\u03B2"
+gamma_unicode = "\u03B3"
+delta_unicode = "\u03B4"
+
 
 ```
 
@@ -126,7 +133,6 @@ dt_geneMod_perslab[[colModule]] %>% unique -> vec_mods
 vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
 ```
 
-# analysis
 
 ```{r}
 df_scaled_embed = fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_mat_scaled_embed_gerhard2018.csv.gz") %>% setDF
@@ -136,6 +142,215 @@ rownames(mat_scaled_embed) = df_scaled_embed$run_accession
 mat_scaled_embed[0:4,0:4]
 
 ```
+
+plotting colors
+
+```{r}
+
+vec_colors_cluster_perslab_coarse = readRDS(paste0(dirWGCNA_plots,prefixData,"_", prefixRun,  "_vec_colors_cluster_perslab_coarse.RDS"))
+
+for (i in 1:4) {
+  names(vec_colors_cluster_perslab_coarse) =   gsub(pattern=c("alpha-", "beta", "gamma-", "delta")[i], 
+  replacement=c(alpha_unicode, Beta_unicode, gamma_unicode, delta_unicode)[i],
+  x=names(vec_colors_cluster_perslab_coarse))
+
+}
+ 
+
+```
+
+### patient metadata
+
+```{r}
+dt_metadata <- fread(here("data", "liver_gerhard2018_patient_metadata_qc.csv.gz"))
+```
+
+# analysis
+
+## visualise module embeddings in UMAP space 
+
+
+```{r}
+mat_scaled_embed_filter = mat_scaled_embed[,!grepl("gerhard", colnames(mat_scaled_embed))]
+```
+
+
+### svd
+
+```{r}
+mat_scaled_embed_filter_svd = svd(x=mat_scaled_embed_filter, nv=10)
+
+```
+
+
+```{r}
+embed_svd_v = mat_scaled_embed_filter_svd$v
+```
+
+```{r}
+dt_svd = data.table(embed_svd_v)
+#colnames(dt_umap) = c("UMAP_1", "UMAP_2")
+dt_svd$module = colnames(mat_scaled_embed_filter) 
+dt_svd$cell_cluster = gsub("_\\d$", "",colnames(mat_scaled_embed_filter))
+
+# all.equal(dt_metadata$run_accession,dt_umap$run_accession)
+# # [1] TRUE
+# dt_umap = cbind(dt_umap, dt_metadata[,c("Diagnosis", "SEX", "Age", "BMI_surg")])
+```
+
+```{r}
+ggplot(data = dt_svd, mapping=aes(x=V1, y=V2, color=cell_cluster)) +
+  geom_point(size=6, alpha=0.9) +
+    scale_color_manual(
+    values=vec_colors_cluster_perslab_coarse) 
+```
+
+## umap 
+
+```{r}
+embed_umap = umap(d=embed_svd_v, preserve.seed = TRUE)
+```
+
+```{r}
+dt_umap = data.table(embed_umap$layout)
+colnames(dt_umap) = c("UMAP_1", "UMAP_2")
+dt_umap$module = colnames(mat_scaled_embed_filter) 
+#
+for (i in 1:4) {
+ dt_umap$module  =   gsub(pattern=c("alpha-", "beta", "gamma-", "delta")[i], 
+  replacement=c(alpha_unicode, Beta_unicode, gamma_unicode, delta_unicode)[i],
+  x=dt_umap$module )
+
+}
+dt_umap$cell_cluster = gsub("_\\d$", "",dt_umap$module )
+
+# all.equal(dt_metadata$run_accession,dt_umap$run_accession)
+# # [1] TRUE
+# dt_umap = cbind(dt_umap, dt_metadata[,c("Diagnosis", "SEX", "Age", "BMI_surg")])
+```
+
+```{r}
+ggplot(data = dt_umap, mapping=aes(x=UMAP_1, y=UMAP_2, color=cell_cluster)) +
+  geom_point(size=6, alpha=0.9) +
+    scale_color_manual(
+    values=vec_colors_cluster_perslab_coarse) 
+```
+
+<!-- ```{r} -->
+
+<!-- # vec_hub_genes <- vec_mod_genes[order(vec_mod_kIMs, decreasing=T)] -->
+<!-- # vec_hub_kIMs <- vec_mod_kIMs[order(vec_mod_kIMs, decreasing=T)] -->
+<!-- df_hub.data <- cbind.data.frame( -->
+<!--   metamodule = rep(names(list_vec_mod_sizes), sapply(list_vec_mod_sizes, length)), -->
+<!--   module = unlist(list_vec_metamod_modules, F), -->
+<!--   size = unlist(list_vec_mod_sizes, F)) -->
+
+<!-- df_hub.data$colour = vec_colors_meta[match(df_hub.data$metamodule, names(vec_colors_meta))] -->
+
+<!-- rownames(df_hub.data) = df_hub.data$module -->
+
+<!-- ``` -->
+
+<!-- add gene set enrichment info -->
+
+<!-- ```{r} -->
+<!-- dt_resultsGO$minlog10_p.value_fisher_BH = -log10(dt_resultsGO$p.value_fisher_BH) -->
+
+<!-- dt_resultsGO_plot_swne <- dt_resultsGO[,.(module, term =GO_term, minlog10_p.value_fisher_BH=-log10(p.value_fisher_BH),source)] -->
+
+<!-- dt_resultsKEGG_plot_swne = dt_resultsKEGG[,.(module, term =KEGG_term, minlog10_p.value_fisher_BH=-log10(p.value_fisher_BH),source)] -->
+
+<!-- dt_resultsREACT_plot_swne = dt_resultsREACT[,.(module, term =REACT_name, minlog10_p.value_fisher_BH=-log10(p.value_fisher_BH),source)] -->
+
+<!-- dt_resultsGO_plot_swne = dt_resultsGO_plot_swne[order(-minlog10_p.value_fisher_BH)] -->
+<!-- dt_resultsKEGG_plot_swne = dt_resultsKEGG_plot_swne[order(-minlog10_p.value_fisher_BH)] -->
+<!-- dt_resultsREACT_plot_swne = dt_resultsREACT_plot_swne[order(-minlog10_p.value_fisher_BH)] -->
+
+<!-- dt_results_GERR_plot_swne = rbindlist(list(dt_resultsGO_plot_swne, dt_resultsKEGG_plot_swne, dt_resultsREACT_plot_swne), use.names=T) -->
+
+<!-- dt_results_GERR_plot_swne_dcast <- dcast.data.table(dt_results_GERR_plot_swne, formula = "term ~ module", value.var = "minlog10_p.value_fisher_BH", fun.aggregate = I, fill= 0) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+
+
+<!-- seuratObj_embeddings_tmp <- Seurat::CreateSeuratObject(counts= CreateAssayObject(data=mat_scaled_embed_filter), assay="modEmbed") -->
+
+<!-- #seuratObj_embeddings_tmp <- Seurat::AddMetaData(seuratObj_embeddings_tmp, df_hub.data) -->
+
+<!-- seuratObj_embeddings_tmp <- Seurat::ScaleData( -->
+<!--   object = seuratObj_embeddings_tmp, -->
+<!--   features=rownames(seuratObj_embeddings_tmp)) -->
+
+<!-- seuratObj_embeddings_tmp <- RunPCA(object = seuratObj_embeddings_tmp,  -->
+<!--                                    features=rownames(seuratObj_embeddings_tmp), -->
+<!--                                    assay= "modEmbed", seed.use = randomSeed, npcs = npcs, verbose = T) -->
+
+
+<!-- # seuratObj_embeddings_tmp <- RunUMAP(object = seuratObj_embeddings_tmp,  -->
+<!-- #                                     assay= "modEmbed",  -->
+<!-- #                                     seed.use = randomSeed, -->
+<!-- #                                     n.neighbors=15L, -->
+<!-- #                                     dims=1:npcs) -->
+
+
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- seuratObj_embeddings_tmp <- FindNeighbors(seuratObj_embeddings_tmp, reduction = "pca", dims = 1:npcs, verbose = T) -->
+<!-- seuratObj_embeddings_tmp <- FindClusters(seuratObj_embeddings_tmp, random.seed = randomSeed, verbose = T, resolution = 1) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- DimPlot(seuratObj_embeddings_tmp, reduction = "pca") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- mat_comb_embed_geneset <- mat_embed -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- df_hub.data$UMAP_1 <- seuratObj_embeddings_tmp@reductions$umap@cell.embeddings[,1] -->
+<!-- df_hub.data$UMAP_2 <- seuratObj_embeddings_tmp@reductions$umap@cell.embeddings[,2] -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- seuratObj_embeddings_tmp <- Seurat::FindNeighbors(seuratObj_embeddings_tmp, random.seed = randomSeed) -->
+<!-- seuratObj_embeddings_tmp <- FindClusters(seuratObj_embeddings_tmp, resolution = 1.5, random.seed = randomSeed) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- p_meta <- DimPlot(seuratObj_embeddings_tmp, reduction = "umap", group.by = "metamodule", pt.size=df_hub.data$size/10, label = F) -->
+
+<!-- p_meta <- p_meta +  ggrepel::geom_text_repel( -->
+<!--         direction    = "both", -->
+<!--         segment.color = "grey50", -->
+<!--         point.padding=0.1, -->
+<!--         #label.padding =0.1, -->
+<!--         force=0.1, -->
+<!--         segment.size = 0.2, -->
+<!--         data=df_hub.data, -->
+<!--         mapping = aes( -->
+<!--             x=UMAP_1, -->
+<!--             y=UMAP_2, -->
+<!--             label=stringr::str_wrap(module)), -->
+<!--         color="black", -->
+<!--         size=4) -->
+
+<!-- p_meta -->
+
+<!-- ``` -->
+
+
+
+
+
+
+
 
 get overlap matrix
 
@@ -174,10 +389,12 @@ mat_moduleGeneIntersect[row(mat_moduleGeneIntersect)==col(mat_moduleGeneIntersec
 ```
 
 ```{r}
-summary(as.numeric(mat_moduleGeneIntersect))
+pheatmap(mat = mat_moduleGeneIntersect)
+```
 
-#    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
-# 0.00000 0.00000 0.00000 0.14708 0.04545 0.91667 
+```{r}
+mat_moduleGeneIntersect %>% as.numeric %>% sort(.,TRUE) %>% head
+
 ```
 
 

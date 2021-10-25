@@ -40,7 +40,6 @@ library("Matrix")
 library("parallel")
 #library("tidyverse")
 library("here")
-library("boot")
 library("magrittr")
 #library("AUCell")
 library("ggplot2")
@@ -60,12 +59,12 @@ options(stringsAsFactors = F,
         verbose=F,
         boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
         boot.ncpus = 20,
-        mc.cores=40 # for parallel computation
-        ) 
+        mc.cores=20 # for parallel computation
+        )
 
 RNGkind("L'Ecuyer-CMRG")
 
-R=1e3-1
+R=1e4-1
 # ?boot
 # For most of the boot methods the resampling is done in the master process, but not if simple = TRUE nor sim = "parametric". In those cases (or where statistic itself uses random numbers), more care is needed if the results need to be reproducible. Resampling is done in the worker processes by censboot(sim = "wierd") and by most of the schemes in tsboot (the exceptions being sim == "fixed" and sim == "geom" with the default ran.gen).
 # 
@@ -214,9 +213,9 @@ lm can't deal with dashes in module names so replace with underscore
 colnames(mat_scaled_embed) <- gsub("-","_",colnames(mat_scaled_embed))
 ```
 
-<!-- ```{r} -->
-<!-- colnames(mat_unscaled_embed) <- gsub("-","_",colnames(mat_unscaled_embed)) -->
-<!-- ``` -->
+# ```{r}
+# colnames(mat_unscaled_embed) <- gsub("-","_",colnames(mat_unscaled_embed))
+# ```
 
 ```{r}
 list_dt_metadata = list(dt_metadata_steatosis, dt_metadata_lobinflam, dt_metadata_fibrosis, dt_metadata_lobinflam_vs_fibrosis, dt_metadata_fibrosis_severity)
@@ -275,6 +274,7 @@ run linear models
 scaled 
 
 ```{r}
+# https://stats.stackexchange.com/questions/242404/how-does-the-boot-package-in-r-handle-collecting-bootstrap-samples-if-strata-are
 set.seed(randomSeed)
 
 system.time(list_list_bootOut <- lapply(names(list_dt_model_sub), function(condition) {
@@ -301,11 +301,13 @@ system.time(list_list_bootOut <- lapply(names(list_dt_model_sub), function(condi
         set.seed(randomSeed+1)
         bootOut <- boot::boot(data=dt_model_tmp, 
                                statistic = fnc_stat,
+                               strata = as.factor(dt_model_tmp$Diagnosis),
                                R = R,
                                sim = "ordinary",
                                stype = "i",
                                parallel = getOption("boot.parallel"),
-                               ncpus = getOption("boot.ncpus")) 
+                               ncpus = getOption("boot.ncpus")
+                              ) 
       })
     }
     return(bootOut)  
@@ -399,8 +401,8 @@ list_dt_bootOut_stats <- lapply(names(list_list_bootOut), function(condition) {
        "confInt_upper_percentile"=confInt_upper_percentile,
        "confInt_lower_norm"=confInt_lower_norm,
        "confInt_upper_norm"=confInt_upper_norm,
-       "p.value_percentile" = max(0.5,min(sum(mat_boot_replicates[,idx_col]>0), sum(mat_boot_replicates[,idx_col]<0)))*2/R,
-       "p.value_norm" = pnorm(q=abs(bootMean), mean=0, sd=bootSE, lower.tail = F)*2)
+       "p.value_percentile" = ifelse(bootOut$t0[idx_col]>0,  max(1,sum(mat_boot_replicates[,idx_col]<=0))/R, max(1, sum(mat_boot_replicates[,idx_col]>=0))/R),
+       "p.value_norm" = pnorm(q=abs(bootMean), mean=0, sd=bootSE, lower.tail = F))
     }, error = function(err) {
       warning(paste0(module, ": ", err))
       c("estimate_original"=NA_real_,
@@ -423,7 +425,7 @@ list_dt_bootOut_stats <- lapply(names(list_list_bootOut), function(condition) {
   
   #dt_bootOut_stats[,p.value_percent_BH:=p.adjust(p.value_percent,method = params$pAdjMethod)]
   #dt_bootOut_stats[,p.value_born_BH:=p.adjust(p.value_norm, method = params$pAdjMethod)]
-  colnames(dt_bootOut_stats)[3]="estimate_original" # for some reason, it appends ".condition" to these column names
+  colnames(dt_bootOut_stats) = gsub("\\.condition\\d*$", "", colnames(dt_bootOut_stats)) # for some reason, it appends ".condition" to these column names
   return(dt_bootOut_stats)
 })
 
@@ -759,8 +761,8 @@ openxlsx::write.xlsx(dt_bootOut_stats, file=paste0(dirWGCNA_tables, prefixData, 
 <!-- fwrite(dt_geneMod_moylan2013, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.csv.gz", compress="gzip") -->
 <!-- ``` -->
 
-## Additional association analyses
-
+## Additional association analyses OUT OF DATE
+ 
 look at individual gene expression 
 
 ```{r}

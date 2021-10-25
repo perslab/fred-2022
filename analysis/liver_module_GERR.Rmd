@@ -45,12 +45,12 @@ library("magrittr")
 #library("ggplot2")
 library("here")
 #library("rlm")
-library("gerr")
+library("gerr", lib.loc = "/projects/jonatan/pub-perslab/18-liver-fred/renv/library/R-4.0/x86_64-pc-linux-gnu/")
 library("glmnet")
 
-library("qusage",lib.loc = "~/R/x86_64-pc-linux-gnu-library/")
+library("qusage")#,lib.loc = "~/R/x86_64-pc-linux-gnu-library/")
 library("GO.db")
-library("gage") # provides GO genesets
+library("gage",lib.loc = "/projects/jonatan/pub-perslab/18-liver-fred/renv/library/R-4.0/x86_64-pc-linux-gnu/") # provides GO genesets
 #library("msigdbr") # provides genesets as tbl
 #library("corrr")
 #library("lme4")
@@ -200,7 +200,7 @@ if (!file.exists(here("data","liver_gerhard2018_genesBackground.RDS.gz"))) {
 vec_allGenes <- union(vec_genes_perslab, vec_genes_gerhard2018)
 #vec_allGenes <- union(vec_allGenes, vec_genes_moylan2013)
 length(vec_allGenes)
-# [1] 40312
+# [1] 36131
 ```
 
 ### genesets
@@ -285,9 +285,7 @@ if (!file.exists(destfile)) {
 
 ```{r}
 reactome.gmt <- GSA.read.gmt(unzip("/projects/jonatan/data/genesets/ReactomePathways.gmt.zip"))
-```
 
-```{r}
 list_vec_genesetsREACT = reactome.gmt$genesets
 list_vec_genesetsREACT = lapply(list_vec_genesetsREACT, toupper)
 names(list_vec_genesetsREACT) = reactome.gmt$geneset.names
@@ -298,7 +296,7 @@ names(list_vec_genesetsREACT) = reactome.gmt$geneset.names
 Make a list of vectors of genes in the WGCNA gene modules
 
 ```{r}
-dt_geneMod_comb = data.table::rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerhard2018))#, dt_geneMod_moylan2013))
+dt_geneMod_comb = data.table::rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerhard2018), use.names = T)#, dt_geneMod_moylan2013))
 ```
 
 <!-- ```{r} -->
@@ -332,7 +330,9 @@ dt_geneMod_comb = data.table::rbindlist(list(dt_geneMod_perslab, dt_geneMod_gerh
 
 ```{r}
 
-vec_mod_comb = dt_geneMod_comb[nchar(module_fibrosis_gerhard2018)>0 | nchar(module_lob_inflam_gerhard2018)>0, module_renamed] %>% unique
+# vec_mod_comb = dt_geneMod_comb[nchar(module_fibrosis_gerhard2018)>0 | nchar(module_lob_inflam_gerhard2018)>0, module_renamed] %>% unique
+
+vec_mod_comb = dt_geneMod_comb[nchar(module_renamed)>0, module_renamed] %>% unique
 
 list_vec_modGenes <- lapply(vec_mod_comb, function(module) {
   condition = dt_geneMod_comb[,module_renamed] == module #[[1]]
@@ -401,7 +401,7 @@ list_gaussResGO <- lapply(list_vec_modGenes, function(vec_modGenes) {
 ### gather the results in a data.table
 
 ```{r}
-vec_module_GERR <- rep(names(list_gaussResGO), sapply(list_gaussResGO, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
+vec_module_GO <- rep(names(list_gaussResGO), sapply(list_gaussResGO, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
 
 vec_coef = lapply(list_gaussResGO, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
 
@@ -429,7 +429,7 @@ sapply(vec_GOid, function(id) {
 # adjust p-values for totalt number of tests (strict!)
 vec_p.value_fisher_GO_BH = p.adjust(vec_p.value_fisher, 
                                     method="BH",
-                                    n=length(list_vec_modGenes)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)))
+                                    n=length(list_vec_modGenes)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)+length(list_vec_genesetsREACT)))
 
 # for (module in unique(vec_module_GERR)) {
 #   vec_logical = vec_module_GERR==module
@@ -442,7 +442,7 @@ vec_p.value_fisher_GO_BH = p.adjust(vec_p.value_fisher,
 ```{r}
 dt_resultsGO <- data.table(
   #cell_cluster = vec_cell_cluster,
-  module = vec_module_GERR,
+  module = vec_module_GO,
   coef = vec_coef,
   p.value_fisher = vec_p.value_fisher,
   p.value_fisher_BH = vec_p.value_fisher_GO_BH,
@@ -504,7 +504,7 @@ lapply(list_gaussResKEGG, function(x) {
 # adjust p-values for totalt number of tests (strict!)
 vec_p.value_fisher_KEGG_BH = p.adjust(vec_p.value_fisherKEGG, 
                                     method="BH",
-                                n=length(list_vec_modGenes)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)))
+                                n=length(list_vec_modGenes)*(length(list_vec_genesetsGO)+length(list_vec_genesetsKEGG)+length(list_vec_genesetsREACT)))
 
 # for (module in unique(vec_moduleKEGG)) {
 #   vec_logical = vec_moduleKEGG==module
@@ -606,7 +606,7 @@ dt_resultsREACT <- dt_resultsREACT[order(p.value_fisher_BH)]
 ## GO 
 
 ```{r}
-saveMeta(savefnc= fwrite, x = dt_resultsGO, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_", flagDate,"_GERR_GOenrichmentResults.csv"))
+fwrite(x = dt_resultsGO, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_", flagDate,"_GERR_GOenrichmentResults.csv"))
 
 # also as xlsx for convenience
 
@@ -614,7 +614,7 @@ openxlsx::write.xlsx(x=dt_resultsGO, file = paste0(dirWGCNA_tables,prefixData, "
 
 # KEGG
 
-saveMeta(savefnc= fwrite, x = dt_resultsKEGG, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun,  "_", flagDate,"_GERR_KEGGenrichmentResults.csv"))
+fwrite(x = dt_resultsKEGG, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun,  "_", flagDate,"_GERR_KEGGenrichmentResults.csv"))
 
 # also as xlsx for convenience
 
@@ -622,10 +622,12 @@ openxlsx::write.xlsx(x=dt_resultsKEGG, file =  paste0(dirWGCNA_tables, prefixDat
 
 # REACTOME
 
-saveMeta(savefnc= fwrite, x = dt_resultsREACT, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun,  "_", flagDate,"_GERR_REACTOMEenrichmentResults.csv"))
+fwrite(x = dt_resultsREACT, file = paste0(dirWGCNA_tables, prefixData, "_", prefixRun,  "_", flagDate,"_GERR_REACTOMEenrichmentResults.csv"))
 
 # also as xlsx for convenience
 
 openxlsx::write.xlsx(x=dt_resultsREACT, file =  paste0(dirWGCNA_tables, prefixData, "_", prefixRun, "_",  flagDate,"_GERR_REACTOMEenrichmentResults.xlsx"))
 
 ```
+
+

@@ -119,7 +119,7 @@ head(dt_geneMod_gerhard2018)
 # dt_geneMod_moylan2013<- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.csv.gz")
 # head(dt_geneMod_moylan2013)
 
-dt_geneMod_merged = rbindlist(list(dt_geneMod_perslab,dt_geneMod_gerhard2018))#, dt_geneMod_moylan2013))
+dt_geneMod_merged = rbindlist(list(dt_geneMod_perslab,dt_geneMod_gerhard2018), use.names = T)#, dt_geneMod_moylan2013))
 ```
 
 ```{r}
@@ -266,41 +266,41 @@ rownames(mat_datExpr_m) = dt_datExpr_moylan$gene
 hist(mat_datExpr_m["RFC2",],breaks = 20)
 ```
 
-#### using normalized data, without scaling first
+<!-- #### using normalized data, without scaling first -->
 
-```{r}
-mat_embed <- sapply(vec_mods, function(mod) {
+<!-- ```{r} -->
+<!-- mat_embed <- sapply(vec_mods, function(mod) { -->
 
-  # get gene weights
-  condition = quote(dt_geneMod_merged[[colModule]]==mod)
-  vec_pkMs <- dt_geneMod_merged[eval(condition), pkMs,]
+<!--   # get gene weights -->
+<!--   condition = quote(dt_geneMod_merged[[colModule]]==mod) -->
+<!--   vec_pkMs <- dt_geneMod_merged[eval(condition), pkMs,] -->
 
-  # normalize module gene weights to sum to 1
-  vec_pkMs <- vec_pkMs/sum(vec_pkMs)
+<!--   # normalize module gene weights to sum to 1 -->
+<!--   vec_pkMs <- vec_pkMs/sum(vec_pkMs) -->
 
-  # find corresponding rows of the expression matrix
-  vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr))
+<!--   # find corresponding rows of the expression matrix -->
+<!--   vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr)) -->
 
-  # filter out mis-matches
-  vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
-  vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)]
+<!--   # filter out mis-matches -->
+<!--   vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)] -->
+<!--   vec_idxRow <- vec_idxRow[!is.na(vec_idxRow)] -->
 
-  # compute weighted sum of normalized expression
-  mat_datExpr[vec_idxRow,] %>% as.matrix -> mat_datExpr_sub
-  
-  if (nrow(mat_datExpr_sub)==0) {
-    stop(paste0(mod, ": no module genes found in datExpr"))
-  } else if (nrow(mat_datExpr_sub)>0 & nrow(mat_datExpr_sub)<5) {
-    warning(paste0(mod, ": only ", nrow(mat_datExpr_sub), " module genes detected"))
-  }
-  vec_pkMs %*% mat_datExpr_sub
+<!--   # compute weighted sum of normalized expression -->
+<!--   mat_datExpr[vec_idxRow,] %>% as.matrix -> mat_datExpr_sub -->
 
-})
+<!--   if (nrow(mat_datExpr_sub)==0) { -->
+<!--     stop(paste0(mod, ": no module genes found in datExpr")) -->
+<!--   } else if (nrow(mat_datExpr_sub)>0 & nrow(mat_datExpr_sub)<5) { -->
+<!--     warning(paste0(mod, ": only ", nrow(mat_datExpr_sub), " module genes detected")) -->
+<!--   } -->
+<!--   vec_pkMs %*% mat_datExpr_sub -->
 
-rownames(mat_embed) <- colnames(mat_datExpr)
+<!-- }) -->
 
-mat_embed[0:4,0:4]
-```
+<!-- rownames(mat_embed) <- colnames(mat_datExpr) -->
+
+<!-- mat_embed[0:4,0:4] -->
+<!-- ``` -->
 
 #### using normalized data, but scaling first (no centering, though!)
 
@@ -326,15 +326,15 @@ now scale (without centering)
 mat_datExpr %>% t %>% scale(., center=FALSE, scale=apply(.,2,sd,na.rm=T)) %>% t -> mat_datExpr_scaled
 ```
 
-compare
+<!-- compare -->
 
-```{r}
-mat_datExpr[0:6,0:5]
-```
+<!-- ```{r} -->
+<!-- mat_datExpr[0:6,0:5] -->
+<!-- ``` -->
 
-```{r}
-mat_datExpr_scaled[0:6,0:5]
-```
+<!-- ```{r} -->
+<!-- mat_datExpr_scaled[0:6,0:5] -->
+<!-- ``` -->
 
 
 ```{r}
@@ -380,14 +380,14 @@ mat_scaled_embed[0:4,0:4]
 mat_scaled_embed_rescaled <- scale(mat_scaled_embed, center=FALSE, scale=apply(mat_scaled_embed,2,sd,na.rm=T))
 ```
 
-how correlated are mat_embed and mat_scaled_embed? 
+<!-- how correlated are mat_embed and mat_scaled_embed?  -->
 
-```{r}
-mat_cor = cor(mat_embed, mat_scaled_embed)
-vec_diag = mat_cor[col(mat_cor)==row(mat_cor)]
-median(vec_diag)
-# [1] 0.9034941
-```
+<!-- ```{r} -->
+<!-- mat_cor = cor(mat_embed, mat_scaled_embed) -->
+<!-- vec_diag = mat_cor[col(mat_cor)==row(mat_cor)] -->
+<!-- median(vec_diag) -->
+<!-- # [1] 0.9034941 -->
+<!-- ``` -->
 
 For most modules, scaling hardly changes anything. 
 These are presumably the ones where the different genes in the module tend to have a similar rank across samples.

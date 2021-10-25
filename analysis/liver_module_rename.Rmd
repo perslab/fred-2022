@@ -103,16 +103,35 @@ dt_geneMod_gerhard2018[0:3,]
 # dt_geneMod_moylan2013[0:3,]
 ```
 
+seurat object
+
+```{r}
+seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_seuratObj.RDS"))
+```
+
 ```{r}
 dt_geneMod_perslab$module_renamed = dt_geneMod_perslab[[colModule]]
 vec_cell_cluster = unique(dt_geneMod_perslab[[colCellClust]])
-vec_cell_cluster = vec_cell_clust[nchar(vec_cell_clust)>0]
+vec_cell_cluster = vec_cell_cluster[nchar(vec_cell_cluster)>0]
 
 for (cell_cluster in vec_cell_cluster) {
   vec_cell_cluster_mod = unique(dt_geneMod_perslab[[colModule]][dt_geneMod_perslab[[colCellClust]]==cell_cluster])
   vec_cell_cluster_mod = vec_cell_cluster_mod[nchar(vec_cell_cluster_mod)>0]
   for (i in 1:length(vec_cell_cluster_mod))  {
-      dt_geneMod_perslab$module_renamed[dt_geneMod_perslab$module_renamed==vec_cell_cluster_mod[i]] = paste0(cell_cluster, "_", i) 
+      dt_geneMod_perslab$module_renamed[dt_geneMod_perslab$module_renamed==vec_cell_cluster_mod[i]] = paste0(cell_cluster, "_", i)
+      colnames(seuratObj@meta.data)[colnames(seuratObj@meta.data)==gsub("perslab_","",vec_cell_cluster_mod[i])] = paste0(cell_cluster, "_", i) 
+  }
+}
+```
+
+rename module embeddings in Seurat object metadata
+
+```{r}
+for (cell_cluster in vec_cell_cluster) {
+  vec_cell_cluster_mod = unique(dt_geneMod_perslab[[colModule]][dt_geneMod_perslab[[colCellClust]]==cell_cluster])
+  vec_cell_cluster_mod = vec_cell_cluster_mod[nchar(vec_cell_cluster_mod)>0]
+  for (i in 1:length(vec_cell_cluster_mod))  {
+      colnames(seuratObj@meta.data)[colnames(seuratObj@meta.data)==vec_cell_cluster_mod[i]] = paste0(cell_cluster, "_", i) 
   }
 }
 ```
@@ -140,36 +159,36 @@ for (i in 1:length(vec_mod))  {
 <!-- ``` -->
 
 make a dictionary with an overview of what has happened
+UPDATE: do this when we have metamodules as well 
+# ```{r}
+# vec_mods_renamed = unique(dt_geneMod_perslab$module_renamed)
+# vec_mods_renamed = vec_mods_renamed[nchar(vec_mods_renamed)>0]
+# 
+# names(vec_mods_renamed) = sapply(vec_mods_renamed, function(mod_renamed){ dt_geneMod_perslab$module_filter[grep(mod_renamed, dt_geneMod_perslab$module_renamed)[1]]})
+# ```
 
-```{r}
-vec_mods_renamed = unique(dt_geneMod_perslab$module_renamed)
-vec_mods_renamed = vec_mods_renamed[nchar(vec_mods_renamed)>0]
-
-names(vec_mods_renamed) = sapply(vec_mods_renamed, function(mod_renamed){ dt_geneMod_perslab$module_filter[grep(mod_renamed, dt_geneMod_perslab$module_renamed)[1]]})
-```
-
-```{r}
-vec_mods_filter = unique(dt_geneMod_perslab$module_filter)
-vec_mods_filter = vec_mods_filter[nchar(vec_mods_filter)>0]
-```
+# ```{r}
+# vec_mods_filter = unique(dt_geneMod_perslab$module_filter)
+# vec_mods_filter = vec_mods_filter[nchar(vec_mods_filter)>0]
+# ```
 
 <!-- ```{r} -->
 <!-- vec_mods_merged = unique(dt_geneMod_perslab$module_merged) -->
 <!-- vec_mods_merged = vec_mods_merged[nchar(vec_mods_merged)>0] -->
 <!-- ``` -->
 
-```{r}
-dt_dict = data.table("original"=vec_mods_filter, 
-                     "new"=ifelse(vec_mods_filter %in% names(vec_mods_renamed), vec_mods_renamed[vec_mods_filter], vec_mods_filter))
-```
+# ```{r}
+# dt_dict = data.table("original"=vec_mods_filter, 
+#                      "new"=ifelse(vec_mods_filter %in% names(vec_mods_renamed), vec_mods_renamed[vec_mods_filter], vec_mods_filter))
+# ```
 
 <!-- ```{r} -->
 <!-- dt_dict[["new"]] = ifelse(!dt_dict$new %in% c(vec_mods_renamed,vec_mods_merged), "pruned",dt_dict$new) -->
 <!-- ``` -->
 
-```{r}
-dt_dict[["new"]] = ifelse(!dt_dict$new %in% vec_mods_renamed, "not_preserved", dt_dict$new)
-```
+# ```{r}
+# dt_dict[["new"]] = ifelse(!dt_dict$new %in% vec_mods_renamed, "not_preserved", dt_dict$new)
+# ```
 
 <!-- ```{r} -->
 <!-- log_prune = read_lines("/projects/jonatan/pub-perslab/18-liver-wgcna/log/merge2_201006_mod_merge_log.txt") -->
@@ -196,7 +215,7 @@ fwrite(dt_geneMod_perslab, file="/projects/jonatan/pub-perslab/18-liver-wgcna/ta
 
 # openxlsx::write.xlsx(x = dt_geneMod_perslab, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.xlsx")
 # 
-# fwrite(dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz", compress="gzip")
+fwrite(dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz", compress="gzip")
 
 # openxlsx::write.xlsx(x = dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.xlsx")
 # 
@@ -205,6 +224,20 @@ fwrite(dt_geneMod_perslab, file="/projects/jonatan/pub-perslab/18-liver-wgcna/ta
 # openxlsx::write.xlsx(x = dt_geneMod_moylan2013, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.xlsx")
 ```
 
+
+also write out dict
+
+```{r}
+dt_dict_perslab = dt_geneMod_perslab[!duplicated(module_renamed) & nchar(module_renamed)>0, c("cell_cluster", "module", "module_renamed")]
+```
+
+```{r}
+openxlsx::write.xlsx(x = dt_dict_perslab, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod_dict.xlsx")
+
+```
+
+
 next: 
-liver_module_embed_in_moylan2013.Rmd
-liver_module_embed_in_gerhard2018.Rmd
+
+liver_module_sc_merge_to_metamodule.Rmd
+

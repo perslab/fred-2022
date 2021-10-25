@@ -237,6 +237,7 @@ seuratObjIntegrated <- Seurat::IntegrateData(anchorset =anchors,
 
 ## First check what data looks like when doing PCA and UMAP on SC Transformed data
 
+NB: We do not actually use the "SCTall" assay for downstream analysis!
 
 ```{r}
 
@@ -248,7 +249,7 @@ seuratObjIntegrated <- SCTransform(seuratObjIntegrated,
                                    new.assay.name = "SCTall", 
                                    vars.to.regress = c("percent.mito",  "CC.Difference" ), #  Variables to regress out in a second non-regularized linear regression. For example, percent.mito. Default is NULL
                                   do.correct.umi=T,
-                                  do.scale=F,
+                                  do.scale=F, #  	Whether to scale residuals to have unit variance; default is FALSE
                                   do.center=T,
                                   return.only.var.genes =F,
                                   seed.use = randomSeed,#params$randomSeed,
@@ -322,6 +323,8 @@ saveMeta(savefnc=ggsave, plot =p2, filename = here("plots", paste0(prefixData, "
 
 ## Find cluster markers 
 
+NOTE: Here we are using the "integrated" assay
+
 ```{r}
 clusters = seuratObjIntegrated@meta.data[[paste0("SCT_snn_res.", res_primary)]] %>% table %>% names 
 Idents(seuratObjIntegrated) <-seuratObjIntegrated@meta.data[[paste0("SCT_snn_res.", res_primary)]]
@@ -334,7 +337,7 @@ fun = function(cluster) {tryCatch({
               ident.1 = cluster,
               only.pos = T,
               #ident.2 = clusters[clusters!=cluster],
-              test.use  ="MAST",
+              test.use  ="MAST", # this uses the log(x+1) data
               max.cells.per.ident=1000,
               random.seed=randomSeed,
               #latent.vars = if (!is.null(merge_specify) | !is.null(merge_group_IDs)) "sample_ID" else NULL,
@@ -370,8 +373,4 @@ save in order to transfer labels using a separate script
 
 ```{r}
 saveMeta(savefnc = saveRDS, object =seuratObjIntegrated, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "seuratObj.RDS.gz")), compress="gzip")
-```
-
-```{r}
-saveMeta(savefnc = saveRDS, object =seuratObj, file = here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz")), compress="gzip")
 ```

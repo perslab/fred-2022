@@ -1,5 +1,5 @@
 ---
-title: 'Liver - prune redundant gene modules across cell types'
+title: 'Liver - filter gene modules on various QC metrics'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -36,8 +36,12 @@ options(stringsAsFactors = F,
         use="pairwise.complete.obs", 
         warn=1, 
         verbose=F,
-        mc.cores=40 # for parallel computation
+        mc.cores=10 # for parallel computation
         ) 
+
+RNGkind("L'Ecuyer-CMRG")
+
+R=1e4-1
 
 randomSeed = 12345
 set.seed(randomSeed)
@@ -55,9 +59,14 @@ library("dplyr")
 library("Matrix")
 library("parallel")
 library("here")
-library("WGCNA")
+#library("broom")
+#library("WGCNA")
+#library("liger")
+#library("boot")
+library("Seurat")#,lib.loc ="/tools/R/envs/rkm916/x86_64-redhat-linux-gnu-library/4.0/")
 #library("biomaRt")
-
+library("presto")
+library("pheatmap")
 
 # source utility functions
 
@@ -145,14 +154,17 @@ dt_geneMod_gerhard2018[0:3,]
 Seurat object containing module embeddings in single cell
 
 ```{r}
-path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
+path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_seuratObj.RDS"))
 
-seuratObj <- load_obj(path_seuratObj)
+seuratObj_sub <- readRDS(path_seuratObj)
 ```
 
 ```{r}
 mat_embed = seuratObj@meta.data[,c(unique(dt_geneMod_perslab$module), unique(dt_geneMod_gerhard2018$module))]
 ```
+
+
+Load DE genes
 
 <!-- load perslab cell metadata  -->
 
@@ -403,14 +415,780 @@ length(vec_mods_perslab_keep)
 # [1] 202
 ```
 
-filter modules (overwrite existing filter columns)
+filter modules (don't overwrite existing filter columns)
 
 ```{r}
 
 dt_geneMod_perslab[,module_filter:=ifelse(gsub("perslab_","", module_filter) %in% ..vec_mods_perslab_keep, module_filter,NA),]
 
-dt_geneMod_perslab[,cell_cluster_filter:=ifelse(is.na(module_filter), NA, cell_cluster_filter),]
+dt_geneMod_perslab[,cell_cluster_filter_rev:=ifelse(is.na(module_filter), NA, cell_cluster_filter),]
 ```
+
+
+## Filter out modules if marker genes of other cell-types enrich for them
+
+```{r}
+DefaultAssay(seuratObj_sub) <- "SCT_combat"
+
+seuratObj_sub <- NormalizeData(
+  seuratObj_sub,
+  normalization.method = "LogNormalize",
+  assay = "SCT_combat") # this is what SCTransform does as well, i.e log(x+1)
+# required for "MAST" DE test
+
+vec_clusters = seuratObj_sub@meta.data$cluster_perslab_coarse %>% unique
+
+Idents(seuratObj_sub) <- seuratObj_sub@meta.data$cluster_perslab_coarse
+
+```
+
+```{r}
+
+list_iterable = list("X"=vec_clusters)
+fun = function(cluster) {tryCatch({
+  FindMarkers(seuratObj_sub ,
+          #cells.1=colnames(seurat_obj)[Idents(seurat_obj)==cluster],
+          #cells.2=NULL,
+          ident.1 = cluster,
+          only.pos = F,
+          #slot="counts",
+          #ident.2 = clusters[clusters!=cluster],
+          logfc.threshold = 0,
+          #test.use  ="MAST",
+          test.use  ="wilcox",
+          min.pct= 0,
+          #max.cells.per.ident=1000,
+          random.seed=randomSeed,
+          #latent.vars = if (!is.null(merge_specify) | !is.null(merge_group_IDs)) "sample_ID" else NULL,
+          verbose = T)
+          },
+          error = function(err) {
+            NA_character_
+            warning(paste0("findmarkers failed for ", cluster, " with error ", err))
+          })}
+
+list_markers=NULL
+# do NOT parallelise, FindMarkers is already parallelised under the hood!
+list_markers <- lapply(FUN=fun, "X"=list_iterable[[1]])
+
+# add the gene and cluster as a column
+list_dt_markers <- mapply(function(df_markers, cluster) {
+  if (!all(sapply(df_markers, is.na))) {
+    cbind("gene" = rownames(df_markers), "cluster"=rep(cluster, nrow(df_markers)), df_markers) %>% setDT
+  } else {
+    NA_character_
+  }
+},
+df_markers=list_markers,
+cluster=vec_clusters, SIMPLIFY=F) 
+
+
+names(list_dt_markers) <- vec_clusters
+#list_markers <- list_markers[!sapply(list_markers, function(markers) all(is.na(markers)))]
+
+# rownames(df_markers) <- NULL
+# dt_markers  <- setDT(df_markers)
+# dt_markers[,p_val_adj := p.adjust(p_val, method = "BH")]
+#dt_markers$p_val_adj[dt_markers$p_val_adj==0] <- 1e-10
+#dt_markers[,p_val_adj_minlog10 := -log10(p_val_adj)]
+#dt_markers[,avg_LFC_weighted := p_val_adj_minlog10*avg_logFC]
+```
+
+```{r}
+saveRDS(list_dt_markers,  file = "/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_SCTint_combat_list_wilcox_all_markers_cluster_perslab_coarse.RDS.gz", compress="gzip")
+```
+
+run geneset enrichment tests
+
+```{r}
+vec_mods_filter = unique(dt_geneMod_perslab[["module_filter"]])
+vec_mods_filter = vec_mods_filter[!is.na(vec_mods_filter) & nchar(vec_mods_filter)>0]
+
+# vec_clust_filter = names(list_dt_markers)#unique(seuratObj_sub$cluster_perslab_coarse)
+# vec_clust_filter = vec_clust_filter[!is.na(vec_clust_filter) & nchar(vec_clust_filter)>0]
+
+```
+
+<!-- ```{r} -->
+<!-- list_dt_mod_DEgenes_geneset_tests <- lapply(vec_mods_filter, function(mod_filter) { -->
+
+<!--     condition_mod = quote(dt_geneMod_perslab[["module_filter"]]==mod_filter) -->
+
+<!--     vec_mod_kIMs = dt_geneMod_perslab[eval(condition_mod), pkMs] -->
+<!--     names(vec_mod_kIMs) = dt_geneMod_perslab[eval(condition_mod), genes] -->
+<!--     # cell_clust_mod = dt_geneMod_perslab[eval(condition_mod),cell_cluster_filter] %>% unique -->
+
+<!--     # cell_clust_mod  =   gsub(pattern=c("alpha-", "beta", "gamma-", "delta")[i],  -->
+<!--     # replacement=c(alpha_unicode, Beta_unicode, gamma_unicode, delta_unicode)[i], -->
+<!--     # x=cell_clust_mod) -->
+
+<!--     mat_out = sapply(vec_clust_filter, function(clust){  -->
+
+<!--       condition_clust = quote(dt_markers$cluster==clust) -->
+<!--       dt_markers_sub = dt_markers[eval(condition_clust)] -->
+
+
+<!--       if (sum(dt_markers_sub[["gene"]] %in% names(vec_mod_pkMs))>0) { -->
+
+<!--         condition_in = quote(dt_markers_sub[["gene"]] %in% names(vec_mod_pkMs)) -->
+<!--         condition_out = quote(!dt_markers_sub[["gene"]] %in% names(vec_mod_pkMs)) -->
+
+
+<!--         wilcox.out = wilcox.test(x=dt_markers_sub[eval(condition_in), avg_LFC_weighted],  -->
+<!--                     y = dt_markers_sub[eval(condition_out), avg_LFC_weighted],  -->
+<!--                     alternative = c("greater")) -->
+
+<!--         c("statistic"=wilcox.out$statistic, "p.value"=wilcox.out$p.value) -->
+<!--       } else { -->
+<!--         c("statistic"=NA_real_, "p.value"=1) -->
+<!--       } -->
+
+<!--     }) %>% t  -->
+
+<!--   dt_out <- data.table("module"= mod_filter, "cell_cluster" = rownames(mat_out), mat_out) -->
+<!--   colnames(dt_out)[3:4] = c("statistic","p.value") -->
+<!--   dt_out -->
+<!-- }) -->
+
+<!-- dt_mod_DEgenes_geneset_tests <- rbindlist(list_dt_mod_DEgenes_geneset_tests )  -->
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+<!-- list_mat_clustDEgenes_mod_geneset_tests <- lapply(vec_clust_filter, function(clust){  -->
+
+<!--       condition_clust = quote(dt_markers$cluster==clust) -->
+
+<!--       vec_clust_LFC_weighted = dt_markers[eval(condition_clust), avg_LFC_weighted] -->
+
+<!--       names(vec_clust_LFC_weighted) <- dt_markers[eval(condition_clust), gene] -->
+
+<!--       vec_clust_LFC_weighted <- sort(vec_clust_LFC_weighted, decreasing=TRUE) -->
+<!--       # list_vec_kIMs = lapply(vec_mods_filter, function(mod_filter) { -->
+<!--       #    condition_mod = quote(dt_geneMod_perslab[["module_filter"]]==mod_filter) -->
+<!--       #    vec_mod_kIMs = dt_geneMod_perslab[eval(condition_mod), pkMs] -->
+<!--       #    names(vec_mod_kIMs) = dt_geneMod_perslab[eval(condition_mod), genes] -->
+<!--       #    return(vec_mod_kIMs) -->
+<!--       # })  -->
+<!--       list_mod_genes = lapply(vec_mods_filter, function(mod_filter) { -->
+<!--          condition_mod = quote(dt_geneMod_perslab[["module_filter"]]==mod_filter) -->
+<!--          dt_geneMod_perslab[eval(condition_mod), genes] -->
+<!--       })  -->
+
+<!--       iterative.bulk.gsea(values = vec_clust_LFC_weighted,   -->
+<!--                           set.list = list_mod_genes,  -->
+<!--                           verbose = T) -->
+<!-- }) -->
+
+
+<!-- names(list_mat_clustDEgenes_mod_geneset_tests) <- vec_clust_filter -->
+
+<!-- list_dt_clustDEgenes_mod_geneset_tests <- lapply(vec_clust_filter, function(clust) { -->
+
+<!--   mat_clustDEgenes_mod_geneset_tests <- list_mat_clustDEgenes_mod_geneset_tests[[clust]] -->
+<!--   dt_out = data.table("cell_cluster"= clust, "module"=vec_mods_filter, mat_clustDEgenes_mod_geneset_tests)  -->
+<!-- }) -->
+
+
+<!-- dt_mod_DEgenes_geneset_tests <- rbindlist(list_dt_clustDEgenes_mod_geneset_tests)  -->
+<!-- ``` -->
+
+```{r}
+
+list_vec_kIMs = lapply(vec_mods_filter, function(mod_filter) {
+   condition_mod = quote(dt_geneMod_perslab[["module_filter"]]==mod_filter)
+   vec_mod_kIMs = dt_geneMod_perslab[eval(condition_mod), pkMs]
+   vec_mod_kIMs = vec_mod_kIMs/sum(vec_mod_kIMs) # normalize
+   names(vec_mod_kIMs) = dt_geneMod_perslab[eval(condition_mod), genes]
+   return(vec_mod_kIMs)
+})
+names(list_vec_kIMs) = vec_mods_filter
+
+
+```
+
+```{r}
+  
+mat_p_genesettest <- sapply(vec_clusters, function(clust){ 
+      
+      #condition_clust = quote(dt_markers$cluster==clust)
+      
+      vec_clust_LFC = list_dt_markers[[clust]][,avg_logFC] 
+      
+      names(vec_clust_LFC) <- list_dt_markers[[clust]][,gene]
+      
+      #vec_clust_LFC <- sort(vec_clust_LFC, decreasing=TRUE)
+      
+
+      #returns a R+1 * n_module matrix
+      # mat_null_out = safeParallel(list_iterable=list("X"=list_vec_kIMs), 
+      #                simplify=T,
+      #                n_cores=23, 
+      #                Gb_max=200,
+      mat_null_out = sapply(X =  list_vec_kIMs, FUN = function(vec_kIMs) {
+                        vec_idx = match(names(vec_kIMs), names(vec_clust_LFC))
+                        if (all(is.na(vec_idx))) {
+                          return(rep(0, R+1))
+                          } else {
+                            vec_kIMs = vec_kIMs[!is.na(vec_idx)]
+                            vec_idx = vec_idx[!is.na(vec_idx)]
+                            dot_product = vec_clust_LFC[vec_idx] %*% vec_kIMs # returns a 1*1 matrix
+                            vec_dotProduct_null = sapply(1:R, function(i) {
+                              sample(x=vec_clust_LFC, size=length(vec_idx), replace = F) %*% vec_kIMs})
+                        
+                            c(dot_product, vec_dotProduct_null)
+                        }
+                     })
+      
+      vec_p = apply(mat_null_out, MARGIN=2, FUN=function(eachcol){
+        (0.5+sum(eachcol[2:length(eachcol)]>eachcol[1]))/(length(eachcol)-1)
+      })
+      
+      names(vec_p) = vec_mods_filter
+      
+      vec_p
+      
+})
+
+```
+
+# remove ribosomal genes from markers 
+
+```{r}
+  # remove ribo
+list_dt_markers_rm_ribo = lapply(list_dt_markers, function(dt_markers)   {
+  #regex = "^RP[SL]\\D?"
+  #print(dt_markers[grepl(pattern = "^Rp[sl]\\D[[:digit:]]", x = gene, ignore.case=T),gene])
+  dt_markers[!grepl(pattern = "^RP[SL]\\D?[[:digit:]]", x = gene)]
+}) 
+
+
+```
+
+```{r}
+  
+mat_p_genesettest_rm_ribo <- sapply(vec_clusters, function(clust){ 
+      
+      #condition_clust = quote(dt_markers$cluster==clust)
+      
+      vec_clust_LFC = list_dt_markers_rm_ribo[[clust]][,avg_logFC] 
+      
+      names(vec_clust_LFC) <- list_dt_markers_rm_ribo[[clust]][,gene]
+    
+      #vec_clust_LFC <- sort(vec_clust_LFC, decreasing=TRUE)
+      
+
+      #returns a R+1 * n_module matrix
+      # mat_null_out = safeParallel(list_iterable=list("X"=list_vec_kIMs), 
+      #                simplify=T,
+      #                n_cores=23, 
+      #                Gb_max=200,
+      mat_null_out = sapply(X =  list_vec_kIMs, FUN = function(vec_kIMs) {
+                        vec_idx = match(names(vec_kIMs), names(vec_clust_LFC))
+                        if (all(is.na(vec_idx))) {
+                          return(rep(0, R+1))
+                          } else {
+                            vec_kIMs = vec_kIMs[!is.na(vec_idx)]
+                            vec_idx = vec_idx[!is.na(vec_idx)]
+                            dot_product = vec_clust_LFC[vec_idx] %*% vec_kIMs # returns a 1*1 matrix
+                            vec_dotProduct_null = sapply(1:R, function(i) {
+                              sample(x=vec_clust_LFC, size=length(vec_idx), replace = F) %*% vec_kIMs})
+                        
+                            c(dot_product, vec_dotProduct_null)
+                        }
+                     })
+      
+      vec_p = apply(mat_null_out, MARGIN=2, FUN=function(eachcol){
+        (0.5+sum(eachcol[2:length(eachcol)]>eachcol[1]))/(length(eachcol)-1)
+      })
+      
+      names(vec_p) = vec_mods_filter
+      
+      vec_p
+      
+})
+
+```
+
+
+try with esmu instead of DE genes
+
+```{r}
+dt_esmu = fread("/projects/jonatan/pub-perslab/18-liver-fred/output/liver_perslab_int_seurat_7.esmu.csv.gz")
+```
+
+update column names 
+
+```{r}
+colnames(dt_esmu)[1] <- "gene"
+```
+
+unicode
+
+```{r}
+alpha_unicode = "\u03B1"
+Beta_unicode = "\u03B2"
+gamma_unicode = "\u03B3"
+delta_unicode = "\u03B4"
+
+for (i in 1:4) {
+  
+  colnames(dt_esmu) =   gsub(pattern=c("alpha-", "beta", "gamma-", "delta")[i], 
+  replacement=c(alpha_unicode, Beta_unicode, gamma_unicode, delta_unicode)[i],
+  x=colnames(dt_esmu))
+
+}
+```
+
+remove ribosomal genes
+
+```{r}
+dt_esmu =  dt_esmu[!grepl(pattern = "^RP[SL]\\D?[[:digit:]]", x = gene)]
+```
+
+
+```{r}
+  
+mat_p_genesettest_esmu_rm_ribo <- sapply(vec_clusters, function(clust){ 
+      
+      #condition_clust = quote(dt_markers$cluster==clust)
+      
+      vec_clust_esmu = dt_esmu[,clust, with=F][[1]]
+      
+      names(vec_clust_esmu) <- dt_esmu[,"gene"][[1]]
+    
+      #vec_clust_LFC <- sort(vec_clust_LFC, decreasing=TRUE)
+      
+
+      #returns a R+1 * n_module matrix
+      # mat_null_out = safeParallel(list_iterable=list("X"=list_vec_kIMs), 
+      #                simplify=T,
+      #                n_cores=23, 
+      #                Gb_max=200,
+      mat_null_out = sapply(X =  list_vec_kIMs, FUN = function(vec_kIMs) {
+                        vec_idx = match(names(vec_kIMs), names(vec_clust_esmu))
+                        if (all(is.na(vec_idx))) {
+                          return(rep(0, R+1))
+                          } else {
+                            vec_kIMs = vec_kIMs[!is.na(vec_idx)]
+                            vec_idx = vec_idx[!is.na(vec_idx)]
+                            dot_product = vec_clust_esmu[vec_idx] %*% vec_kIMs # returns a 1*1 matrix
+                            vec_dotProduct_null = sapply(1:R, function(i) {
+                              sample(x=vec_clust_esmu, size=length(vec_idx), replace = F) %*% vec_kIMs})
+                        
+                            c(dot_product, vec_dotProduct_null)
+                        }
+                     })
+      
+      vec_p = apply(mat_null_out, MARGIN=2, FUN=function(eachcol){
+        (0.5+sum(eachcol[2:length(eachcol)]>eachcol[1]))/(length(eachcol)-1)
+      })
+      
+      names(vec_p) = vec_mods_filter
+      
+      vec_p
+      
+})
+
+```
+
+
+find modules with a greater affinity to another than to their own 
+
+```{r}
+dict_mod_cellclust = dt_geneMod_perslab[,c("module_filter","cell_cluster_filter", "module_renamed")]
+dict_mod_cellclust = dict_mod_cellclust[!duplicated(module_filter) & nchar(module_filter)>0]
+```
+
+```{r}
+alpha_unicode = "\u03B1"
+Beta_unicode = "\u03B2"
+gamma_unicode = "\u03B3"
+delta_unicode = "\u03B4"
+
+for (i in 1:4) {
+  
+  dict_mod_cellclust$cell_cluster_filter=   gsub(pattern=c("alpha-", "beta", "gamma-", "delta")[i], 
+  replacement=c(alpha_unicode, Beta_unicode, gamma_unicode, delta_unicode)[i],
+  x=dict_mod_cellclust$cell_cluster_filter)
+
+}
+```
+
+adjust p-values
+
+```{r}
+mat_p_genesettest_adj = apply(mat_p_genesettest, MARGIN = 2, FUN=function(eachcol) {
+  p.adjust(p = eachcol, method="BH", n = nrow(mat_p_genesettest)*ncol(mat_p_genesettest))})
+```
+
+```{r}
+mat_p_genesettest_rm_ribo_adj = apply(mat_p_genesettest_rm_ribo, MARGIN = 2, FUN=function(eachcol) {
+  p.adjust(p = eachcol, method="BH", n = nrow(mat_p_genesettest_rm_ribo)*ncol(mat_p_genesettest_rm_ribo))})
+```
+
+
+```{r}
+mat_p_genesettest_esmu_rm_ribo_adj = apply(mat_p_genesettest_esmu_rm_ribo, MARGIN = 2, FUN=function(eachcol) {
+  p.adjust(p = eachcol, method="BH", n = nrow(mat_p_genesettest_esmu_rm_ribo)*ncol(mat_p_genesettest_esmu_rm_ribo))})
+```
+
+if a module enriched higher for another cell type than for its own, and significantly so, it is contaminated
+
+```{r}
+
+vec_contaminated = sapply(rownames(mat_p_genesettest_adj), function(mod_filter) {
+
+  most_enriched_cell_cluster <- colnames(mat_p_genesettest_adj)[which.min(mat_p_genesettest_adj[mod_filter,])] 
+  
+  mod_cell_cluster = dict_mod_cellclust$cell_cluster_filter[dict_mod_cellclust$module_filter==mod_filter]
+    print("")
+  print(paste0(mod_filter,": from ", mod_cell_cluster, ", most enriched: ", most_enriched_cell_cluster))
+  
+  return( if (most_enriched_cell_cluster!=mod_cell_cluster &
+            mat_p_genesettest_adj[mod_filter,most_enriched_cell_cluster] < 0.05 &
+            mat_p_genesettest_adj[mod_filter,mod_cell_cluster] >= 0.05
+            ) TRUE else FALSE)
+
+})
+
+```
+
+
+```{r}
+
+dt_contaminated_rm_ribo = sapply(rownames(mat_p_genesettest_rm_ribo_adj), function(mod_filter) {
+
+  most_enriched_cell_cluster <- colnames(mat_p_genesettest_rm_ribo_adj)[which.min(mat_p_genesettest_rm_ribo_adj[mod_filter,])] 
+  
+  mod_cell_cluster = dict_mod_cellclust$cell_cluster_filter[dict_mod_cellclust$module_filter==mod_filter]
+    print("")
+  print(paste0(mod_filter,": from ", mod_cell_cluster, ", most enriched: ", most_enriched_cell_cluster))
+  
+  c("module"=mod_filter,
+    "cell_cluster_origin"=mod_cell_cluster,
+    "cell_cluster_origin_padj"=mat_p_genesettest_rm_ribo_adj[mod_filter,mod_cell_cluster],
+    "cell_cluster_max_enriched"=most_enriched_cell_cluster,
+    "cell_cluster_max_enriched_padj"=mat_p_genesettest_rm_ribo_adj[mod_filter,most_enriched_cell_cluster],
+    "contaminated" = if (most_enriched_cell_cluster!=mod_cell_cluster &
+            mat_p_genesettest_rm_ribo_adj[mod_filter,most_enriched_cell_cluster] < 0.05 &
+            mat_p_genesettest_rm_ribo_adj[mod_filter,mod_cell_cluster] >= 0.05
+            ) TRUE else FALSE)
+
+}) %>% t %>% data.table()
+
+dt_contaminated_rm_ribo
+```
+
+
+```{r}
+
+dt_contaminated_esmu_rm_ribo = sapply(rownames(mat_p_genesettest_esmu_rm_ribo_adj), function(mod_filter) {
+
+  most_enriched_cell_cluster <- colnames(mat_p_genesettest_esmu_rm_ribo_adj)[which.min(mat_p_genesettest_esmu_rm_ribo_adj[mod_filter,])] 
+  
+  mod_cell_cluster = dict_mod_cellclust$cell_cluster_filter[dict_mod_cellclust$module_filter==mod_filter]
+  print("")
+  print(paste0(mod_filter,": from ", mod_cell_cluster, ", most enriched: ", most_enriched_cell_cluster))
+  
+  c("module"=mod_filter,
+    "cell_cluster_origin"=mod_cell_cluster,
+    "cell_cluster_origin_padj"=mat_p_genesettest_esmu_rm_ribo_adj[mod_filter,mod_cell_cluster],
+    "cell_cluster_max_enriched"=most_enriched_cell_cluster,
+    "cell_cluster_max_enriched_padj"=mat_p_genesettest_esmu_rm_ribo_adj[mod_filter,most_enriched_cell_cluster],
+    "contaminated" = if (most_enriched_cell_cluster!=mod_cell_cluster &
+            mat_p_genesettest_esmu_rm_ribo_adj[mod_filter,most_enriched_cell_cluster] < 0.05 &
+            mat_p_genesettest_esmu_rm_ribo_adj[mod_filter,mod_cell_cluster] >= 0.05
+            ) TRUE else FALSE)
+
+}) %>% t %>% data.table()
+
+dt_contaminated_esmu_rm_ribo
+```
+
+```{r}
+dt_contaminated_rm_ribo$module_renamed = ifelse(dt_contaminated_rm_ribo$module %in% dict_mod_cellclust$module_filter, dict_mod_cellclust$module_renamed[match(dt_contaminated_rm_ribo$module, dict_mod_cellclust$module_filter)], NA)
+```
+
+```{r}
+dt_contaminated_esmu_rm_ribo$module_renamed = ifelse(dt_contaminated_esmu_rm_ribo$module %in% dict_mod_cellclust$module_filter, dict_mod_cellclust$module_renamed[match(dt_contaminated_esmu_rm_ribo$module, dict_mod_cellclust$module_filter)], NA)
+```
+
+```{r}
+dt_contaminated_rm_ribo$cell_cluster_origin_padj <- as.numeric(dt_contaminated_rm_ribo$cell_cluster_origin_padj)
+
+dt_contaminated_rm_ribo$cell_cluster_max_enriched_padj <- as.numeric(dt_contaminated_rm_ribo$cell_cluster_max_enriched_padj)
+
+dt_contaminated_rm_ribo$contaminated <- as.logical(dt_contaminated_rm_ribo$contaminated)
+```
+
+```{r}
+dt_contaminated_esmu_rm_ribo$cell_cluster_origin_padj <- as.numeric(dt_contaminated_esmu_rm_ribo$cell_cluster_origin_padj)
+
+dt_contaminated_esmu_rm_ribo$cell_cluster_max_enriched_padj <- as.numeric(dt_contaminated_esmu_rm_ribo$cell_cluster_max_enriched_padj)
+
+dt_contaminated_esmu_rm_ribo$contaminated <- as.logical(dt_contaminated_esmu_rm_ribo$contaminated)
+```
+
+
+how do results compare with DE genes and esmu?
+
+```{r}
+sum(dt_contaminated_esmu_rm_ribo[contaminated==TRUE,module] %in% dt_contaminated_rm_ribo[contaminated==TRUE,module])
+```
+
+what modules are not filtered when using esmu? 
+
+```{r}
+vec_diff_DE_esmu = setdiff(dt_contaminated_rm_ribo[contaminated==TRUE,module],dt_contaminated_esmu_rm_ribo[contaminated==TRUE,module])
+
+vec_diff_DE_esmu <- ifelse(nchar(dict_mod_cellclust$module_renamed[match(vec_diff_DE_esmu, dict_mod_cellclust$module_filter)])>0, dict_mod_cellclust$module_renamed[match(vec_diff_DE_esmu, dict_mod_cellclust$module_filter)], vec_diff_DE_esmu)
+```
+
+```{r}
+vec_diff_esmu_DE = setdiff(dt_contaminated_esmu_rm_ribo[contaminated==TRUE,module],dt_contaminated_rm_ribo[contaminated==TRUE,module])
+
+vec_diff_esmu_DE <- ifelse(nchar(dict_mod_cellclust$module_renamed[match(vec_diff_esmu_DE, dict_mod_cellclust$module_filter)])>0, dict_mod_cellclust$module_renamed[match(vec_diff_esmu_DE, dict_mod_cellclust$module_filter)], vec_diff_esmu_DE)
+```
+
+
+
+```{r}
+fwrite(dt_contaminated_rm_ribo, here("output",paste0(prefixData , "_", prefixRun, "_dt_contaminated_rm_ribo_", flagDate, ".csv")))
+
+openxlsx::write.xlsx(dt_contaminated_rm_ribo, here("output",paste0(prefixData , "_", prefixRun, "_dt_contaminated_rm_ribo_", flagDate, ".xlsx")))
+```
+
+```{r}
+fwrite(dt_contaminated_esmu_rm_ribo, here("output",paste0(prefixData , "_", prefixRun, "_dt_contaminated_esmu_rm_ribo_", flagDate, ".csv")))
+
+openxlsx::write.xlsx(dt_contaminated_esmu_rm_ribo, here("output",paste0(prefixData , "_", prefixRun, "_dt_contaminated_esmu_rm_ribo_", flagDate, ".xlsx")))
+```
+
+
+```{r}
+table(vec_contaminated_rm_ribo)
+# vec_contaminated_rm_ribo
+# FALSE  TRUE 
+#   134    68 
+table(vec_contaminated)
+# vec_contaminated
+# FALSE  TRUE 
+#   131    71 
+```
+
+which modules have been spared?
+
+```{r}
+vec_spared_by_rm_ribo = names(vec_contaminated)[vec_contaminated][!names(vec_contaminated)[vec_contaminated] %in% names(vec_contaminated_rm_ribo)[vec_contaminated_rm_ribo]]
+
+```
+
+```{r}
+dict_mod_cellclust$module_renamed[match(vec_spared_by_rm_ribo, dict_mod_cellclust$module_filter)]
+```
+
+which modules have been removed that were spared before?
+
+```{r}
+vec_gone_by_rm_ribo = names(vec_contaminated_rm_ribo)[vec_contaminated_rm_ribo][!names(vec_contaminated_rm_ribo)[vec_contaminated_rm_ribo] %in% names(vec_contaminated)[vec_contaminated]]
+
+```
+
+
+
+
+<!-- now look at contamination from specific clusters -->
+
+<!-- ```{r} -->
+<!-- clust = "Hepatocytes" -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- vec_contaminated_clust = sapply(rownames(mat_p_genesettest_adj), function(mod_filter) { -->
+
+<!--   most_enriched_cell_cluster <- colnames(mat_p_genesettest_adj)[which.min(mat_p_genesettest_adj[mod_filter,])]  -->
+
+<!--   mod_cell_cluster = dict_mod_cellclust$cell_cluster_filter[dict_mod_cellclust$module_filter==mod_filter] -->
+
+
+<!--   return( if (most_enriched_cell_cluster== clust & -->
+<!--             most_enriched_cell_cluster!=mod_cell_cluster & -->
+<!--             mat_p_genesettest_adj[mod_filter,most_enriched_cell_cluster] < 0.05 & -->
+<!--             mat_p_genesettest_adj[mod_filter,mod_cell_cluster] >= 0.05 -->
+<!--             ) TRUE else FALSE) -->
+
+<!-- }) -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- names(vec_contaminated_clust)[vec_contaminated_clust] -->
+<!-- ``` -->
+
+<!-- get new names where they exist  -->
+
+<!-- ```{r} -->
+<!-- names(vec_contaminated_clust)[vec_contaminated_clust]  = ifelse( -->
+<!--   nchar(dict_mod_cellclust$module_renamed[match(names(vec_contaminated_clust)[vec_contaminated_clust] , dict_mod_cellclust$module_filter)])>0,  dict_mod_cellclust$module_renamed[match(names(vec_contaminated_clust)[vec_contaminated_clust] , dict_mod_cellclust$module_filter)], names(vec_contaminated_clust)) -->
+<!-- ``` -->
+
+
+```{r}
+table(vec_contaminated)
+# FALSE  TRUE 
+#   131    71 
+```
+
+<!-- ```{r} -->
+<!-- dt_mod_DEgenes_geneset_tests[,p.value_adjust := p.adjust(p.value, method="BH")] -->
+
+<!-- dt_mod_DEgenes_geneset_tests$mod_cell_cluster <- dict_mod_cellclust$cell_cluster_filter[match(dt_mod_DEgenes_geneset_tests$module, dict_mod_cellclust$module_filter)] -->
+
+<!-- dt_mod_DEgenes_geneset_tests$most_enriched_cell_cluster <- NA -->
+<!-- ``` -->
+
+<!-- if a module enriched higher for another celltype than for its own, and significantly so, it is contaminated -->
+
+<!-- ```{r} -->
+
+<!-- #dt_mod_DEgenes_geneset_tests$contaminated <- FALSE -->
+
+<!-- vec_contaminated = sapply(unique(dt_mod_DEgenes_geneset_tests$module), function(mod_filter) { -->
+
+<!--   #mod_celltype = dict_mod_cellclust$cell_cluster_filter[match(mod_filter,dict_mod_cellclust$module_filter)] -->
+<!--   condition_mod = quote(dt_mod_DEgenes_geneset_tests$module==mod_filter) -->
+<!--   #dt_mod_DEgenes_geneset_tests_sub = dt_mod_DEgenes_geneset_tests[eval(condition_mod)] -->
+<!--   most_enriched_cell_cluster <-  dt_mod_DEgenes_geneset_tests[eval(condition_mod),cell_cluster][which.min(dt_mod_DEgenes_geneset_tests[eval(condition_mod), p.value_adjust])] -->
+
+<!--   print("") -->
+<!--   print(most_enriched_cell_cluster) -->
+<!--   print(dt_mod_DEgenes_geneset_tests[eval(condition_mod),mod_cell_cluster] %>% unique) -->
+
+<!--   contaminated = if ((most_enriched_cell_cluster != dt_mod_DEgenes_geneset_tests[eval(condition_mod),mod_cell_cluster] %>% unique) & min(dt_mod_DEgenes_geneset_tests[eval(condition_mod), p.value_adjust]) < 0.05) TRUE else FALSE  -->
+
+<!--   return(contaminated) -->
+<!-- }) -->
+
+<!-- ``` -->
+
+
+since we added this last contamination step after doing everything else, which of the modules that were found to be contaminated downstream are caught by this intervention upstream?
+
+looking at p_heatmap_moduleGeneIntersect_perslab_clustermarkers, the following looked suspicious:
+
+```{r}
+vec_mods_pres_but_contaminated = dict_mod_cellclust$module_renamed[match(names(vec_contaminated)[vec_contaminated], dict_mod_cellclust$module_filter)]
+
+vec_mods_pres_but_contaminated  <- vec_mods_pres_but_contaminated[nchar(vec_mods_pres_but_contaminated)>0]
+```
+
+
+<!-- ```{r} -->
+<!-- vec_mods_suspected_contaminated_1 = c("Endothelial-cells_6", "Dendritic-cells_3", "NK-like-cells_1", "Cholangiocytes_3", "Hepatic-stellate-cells_5", "T-cells-gamma-delta_1", "Hepatocytes_2", "Plasma-cells_1", "Hepatic-stem-cells_1", "B-cells-mature_1", "T-cells-alpha-beta_1") # the last two not so much  -->
+
+<!-- vec_mods_suspected_contaminated_2 = c("Cholangiocytes_2","NK-like-cells_2", "Endothelial-cells_4", "T-cells-gamma-delta_4", "Cholangiocytes_1", "Hepatic-stellate-cells_4") -->
+
+<!-- vec_mods_suspected_contaminated_3 = c("Endothelial-cells_2", "T-cells-gamma-delta_2", "T-cells-alpha-beta_2", "Hepatocytes_1", "Cholangiocytes_4", "Endothelial-cells_7") -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- table(c(vec_mods_suspected_contaminated_1 ,vec_mods_suspected_contaminated_2,vec_mods_suspected_contaminated_3) %in% vec_mods_pres_but_contaminated ) -->
+<!-- # FALSE  TRUE  -->
+<!-- #    13    10  -->
+
+<!-- # c(vec_mods_suspected_contaminated_1 ,vec_mods_suspected_contaminated_2,vec_mods_suspected_contaminated_3)[c(vec_mods_suspected_contaminated_1 ,vec_mods_suspected_contaminated_2,vec_mods_suspected_contaminated_3) %in% vec_mods_pres_but_contaminated]  -->
+<!-- ``` -->
+
+
+
+
+```{r}
+n_max_markers_use = 100
+```
+
+```{r}
+list_vec_topmarkers =   lapply(names(list_dt_markers_rm_ribo), function(clust_name) {
+  vec_markers = list_dt_markers_rm_ribo[[clust_name]]$gene[list_dt_markers_rm_ribo[[clust_name]]$p_val_adj < 0.05]
+  vec_markers = 
+  vec_markers[1:min(n_max_markers_use, length(vec_markers))]
+})
+
+names(list_vec_topmarkers) = names(list_dt_markers_rm_ribo)
+```
+
+
+check overlaps sc modules with marker genes
+
+
+```{r}
+
+list_genelists_perslab_contaminated_rm_ribo = lapply(dt_contaminated_rm_ribo[contaminated==TRUE,module], function(mod) {
+  condition = quote(dt_geneMod_perslab[["module_filter"]]==mod)
+  vec_mod_genes = dt_geneMod_perslab[eval(condition), genes, ] %>% unique
+  return(vec_mod_genes)
+})
+
+names(list_genelists_perslab_contaminated_rm_ribo) = dt_contaminated_rm_ribo[contaminated==TRUE,module]
+
+list_geneWeights_perslab_contaminated_rm_ribo = lapply(dt_contaminated_rm_ribo[contaminated==TRUE,module], function(mod) {
+  condition = quote(dt_geneMod_perslab[["module_filter"]]==mod)
+  vec_kIMs = dt_geneMod_perslab[eval(condition), pkMs, ]
+  names(vec_kIMs) = dt_geneMod_perslab[eval(condition), genes, ]
+  return(vec_kIMs)
+})
+
+names(list_geneWeights_perslab_contaminated_rm_ribo) = dt_contaminated_rm_ribo[contaminated==TRUE,module]
+
+
+```
+
+## plot which of the top marker genes are in the sc modules
+
+
+```{r}
+
+for (clust in vec_clusters) {
+  
+  pdf(file=here("plots", paste0(prefixData, "_",prefixRun, "_heatmap_mods_contaminated_top100_DEgenes_", clust, "_",flagDate, ".pdf")))
+  
+  mat_gene_markers_in_mod = sapply(list_geneWeights_perslab_contaminated_rm_ribo, function(vec_geneWeights) {
+     vec_geneWeights_rank = order(vec_geneWeights)/length(vec_geneWeights)
+     names(vec_geneWeights_rank) = names(vec_geneWeights)
+      ifelse(list_vec_topmarkers[[clust]] %in% names(vec_geneWeights_rank), vec_geneWeights_rank, 0)
+    })
+  
+  rownames(mat_gene_markers_in_mod) <- list_vec_topmarkers[[clust]]
+  
+  colnames(mat_gene_markers_in_mod) = ifelse(nchar(dict_mod_cellclust$module_renamed[match(colnames(mat_gene_markers_in_mod), dict_mod_cellclust$module_filter)])>0, yes=dict_mod_cellclust$module_renamed[match(colnames(mat_gene_markers_in_mod), dict_mod_cellclust$module_filter)], no=dict_mod_cellclust$module_filter[match(colnames(mat_gene_markers_in_mod), dict_mod_cellclust$module_filter)])
+  
+  pheatmap(mat_gene_markers_in_mod, 
+                 cluster_rows = F, 
+                 cluster_cols = F,
+               fontsize_col = 9, #default 10      
+               fontsize_row = 4, #default 10
+                 legend=T,)#, treeheight_row=0, treeheight_col=0)
+  
+  dev.off()
+}
+```
+
+```{r}
+
+
+#here("plots", paste0(prefixData, "_", prefixRun, "_Fig2Aii_corr_mat_",flagDate,".pdf"))
+
+```
+
+
+1XX single cell modules after filtering on the confounding covariates and removing contaminated modules
+
+
+
 
 
 <!-- likewise, at the donor level, we will filter out modules which are more driven by the cells coming from a particular donor than by relevant donor characteristics  (lobular_inflammation_grade, fibrosis grade, BMI?) -->
@@ -443,15 +1221,31 @@ dt_geneMod_perslab[,cell_cluster_filter:=ifelse(is.na(module_filter), NA, cell_c
 
 
 
-merge highly overlapping single cell modules across cell types
+<!-- merge highly overlapping single cell modules across cell types -->
 
-# time Rscript /nfsdata/projects/jonatan/tools/sc-analysis/wgcna-src/geneNetworkScripts/gene_module_merge2.R  --path_df_NWA /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz --colGeneNames genes --colModule module_filter --colCellClust cell_cluster_filter --colGeneWeights pkMs --cellClusters_keep 'c("T-cells-alpha-beta", "NK-like-cells", "Endothelial-cells", "T-cells-gamma-delta", "Macrophages", "Cholangiocytes", "Hepatocytes","Hepatic-stellate-cells", "Dendritic-cells", "Hepatic-stem-cells")' --minPropIntersect  0.7 --minWeightedCor  0.5 --minPropIntersect_iter_increase  1.01 --maxIter 25 --corMethod pearson --mergeOrPrune prune --dirOut /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut merge2 --doPlot  T --RAMGbMax 250 &> ./log/log_liver_merge201001.txt
+<!-- # time Rscript /nfsdata/projects/jonatan/tools/sc-analysis/wgcna-src/geneNetworkScripts/gene_module_merge2.R  --path_df_NWA /projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz --colGeneNames genes --colModule module_filter --colCellClust cell_cluster_filter --colGeneWeights pkMs --cellClusters_keep 'c("T-cells-alpha-beta", "NK-like-cells", "Endothelial-cells", "T-cells-gamma-delta", "Macrophages", "Cholangiocytes", "Hepatocytes","Hepatic-stellate-cells", "Dendritic-cells", "Hepatic-stem-cells")' --minPropIntersect  0.7 --minWeightedCor  0.5 --minPropIntersect_iter_increase  1.01 --maxIter 25 --corMethod pearson --mergeOrPrune prune --dirOut /projects/jonatan/pub-perslab/18-liver-wgcna/ --prefixOut merge2 --doPlot  T --RAMGbMax 250 &> ./log/log_liver_merge201001.txt -->
 
 <!-- re-load new geneMod table after pruning overlapping modules -->
 
 <!-- ```{r} -->
 <!-- dt_geneMod_perslab <-fread(file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz") -->
 <!-- ``` -->
+
+
+
+
+
+
+filter modules (overwrite existing filter columns)
+
+```{r}
+
+dt_geneMod_perslab[,module_filter_contamination:=ifelse(dt_contaminated_esmu_rm_ribo$contaminated[match(module_filter, dt_contaminated_esmu_rm_ribo$module)], NA, module_filter),]
+
+dt_geneMod_perslab[,cell_cluster_filter_contamination:=ifelse(is.na(module_filter), NA, cell_cluster_filter),]
+```
+
+
 
 ```{r}
 colCellClust <- "cell_cluster_merged"
@@ -465,8 +1259,9 @@ colModule <- "module_merged"
 
 
 ```{r}
-dt_geneMod_perslab[,cell_cluster_merged:=cell_cluster_filter]
-dt_geneMod_perslab[,module_merged:=module_filter]
+dt_geneMod_perslab[,module_merged:=module_filter_contamination]
+dt_geneMod_perslab[,cell_cluster_merged:=cell_cluster_filter_contamination]
+
 ```
 
 ```{r}
@@ -475,13 +1270,11 @@ dt_geneMod_gerhard2018[,module_merged:=paste0("gerhard2018_",module)]
 ```
 
 ```{r}
-length(unique(dt_geneMod_perslab$module_filter)[nchar(unique(dt_geneMod_perslab$module_filter))>0])
-# [1] 202
+length(unique(dt_geneMod_perslab$module_filter)[nchar(unique(dt_geneMod_perslab$module_filter))>0 & !is.na(unique(dt_geneMod_perslab$module_filter))])
+# [1] 174
 length(unique(dt_geneMod_perslab$module_merged)[nchar(unique(dt_geneMod_perslab$module_merged))>0])
-# [1] 202
+# [1] 174
 ```
-
-203 single cell modules after filtering 
 
 ## write files to disk
 

@@ -1,5 +1,5 @@
 ---
-title: 'Liver - add cell embeddings on prioritised modules to seurat object'
+title: 'Liver - compute embeddings of single cell modules in MacParland data and add to MacParland seurat object'
 author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
 date: "`r Sys.time()`" 
 output: workflowr::wflow_html
@@ -98,8 +98,8 @@ dirWGCNA_tables = paste0(dirWGCNA_outs, "tables/" )
 
 colGeneWeights = "pkMs"
 colGeneNames = "genes"
-colModule = "module"
-colCellCluster = "cell_cluster"
+colModule = "module_renamed"
+colCellCluster = "cell_cluster_pres"
 
 ```
 
@@ -108,9 +108,9 @@ colCellCluster = "cell_cluster"
 Seurat object contains expression data and cell + patient-level metadata
 
 ```{r}
-path_seuratObj <- here("output", paste0(prefixData, "_", prefixRun, "_", prefixOut, "_perslab_labels_seuratObj.RDS.gz"))
+path_seuratObj_macparland <- here("data", "macparland_seurat_obj3.RDS.gz")
 
-seuratObj <- load_obj(path_seuratObj)
+seuratObj_macparland <- load_obj(path_seuratObj_macparland)
 ```
 
 Load modules dataframe
@@ -120,12 +120,12 @@ dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables
 head(dt_geneMod_perslab)
 
 dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz")
-head(dt_geneMod_gerhard2018)
+# head(dt_geneMod_gerhard2018)
 ```
 
 
 ```{r}
-Seurat::DefaultAssay(seuratObj) <- "SCT_combat"
+DefaultAssay(seuratObj_macparland) <- "SCT"
 ```
 
 <!-- ```{r} -->
@@ -133,43 +133,42 @@ Seurat::DefaultAssay(seuratObj) <- "SCT_combat"
 <!-- ``` -->
 
 ```{r}
-mat_datExpr <- as.matrix(GetAssayData(object = seuratObj, assay = "SCT_combat", slot="data"))
-rownames(mat_datExpr) <- rownames(seuratObj)
-mat_datExpr[0:4,0:4]
+mat_datExpr_macparland <- as.matrix(GetAssayData(object = seuratObj_macparland, assay = "SCT", slot="data"))
+rownames(mat_datExpr_macparland) <- rownames(seuratObj_macparland)
+mat_datExpr_macparland[0:4,0:4]
 ```
 
-```{r}
-vec_sd = apply(mat_datExpr, MARGIN=1, FUN = sd)
-```
+<!-- ```{r} -->
+<!-- vec_sd = apply(mat_datExpr_macparland, MARGIN=1, FUN = sd) -->
+<!-- ``` -->
 
-```{r}
-table(vec_sd==0)
-# FALSE 
-# 24609 
-```
+<!-- ```{r} -->
+<!-- table(vec_sd==0) -->
+<!-- # FALSE  TRUE  -->
+<!-- # 18686    29  -->
+<!-- ``` -->
 
 only keep genes that are part of modules
 
 ```{r}
-mat_datExpr = mat_datExpr[rownames(mat_datExpr) %in% c(dt_geneMod_perslab$genes, dt_geneMod_gerhard2018$genes),]
+mat_datExpr_macparland = mat_datExpr_macparland[rownames(mat_datExpr_macparland) %in% dt_geneMod_perslab$genes,]
 
-dim(mat_datExpr)
+dim(mat_datExpr_macparland)
+# [1] 6038 8444
 ```
-<!-- ```{r} -->
-<!-- mat_datExpr <- mat_datExpr[vec_sd!=0,] -->
-<!-- ``` -->
+
 
 now scale (without centering)
 
 ```{r}
-mat_datExpr %>% t %>% scale(., center=FALSE, scale=apply(.,2,sd,na.rm=T)) %>% t -> mat_datExpr_scaled
+mat_datExpr_macparland %>% t %>% scale(., center=FALSE, scale=apply(.,2,sd,na.rm=T)) %>% t -> mat_datExpr_macparland_scaled
 ```
 
 
 ### compute module embeddings in sc data
 
 ```{r}
-dt_geneMod_merged = rbindlist(list(dt_geneMod_perslab,dt_geneMod_gerhard2018), use.names = T)
+dt_geneMod_merged = dt_geneMod_perslab
 
 dt_geneMod_merged[[colModule]] %>% unique -> vec_mods
 
@@ -177,7 +176,7 @@ vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
 ```
 
 ```{r}
-mat_scaled_embed <- sapply(vec_mods, function(mod) {
+mat_scaled_embed_macparland <- sapply(vec_mods, function(mod) {
  
   # get gene weights
   condition = quote(dt_geneMod_merged[[colModule]]==mod)
@@ -187,7 +186,7 @@ mat_scaled_embed <- sapply(vec_mods, function(mod) {
   vec_pkMs <- vec_pkMs/sum(vec_pkMs)
 
   # find corresponding rows of the expression matrix
-  vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr_scaled))
+  vec_idxRow <- match(dt_geneMod_merged[eval(condition), ..colGeneNames, ][[1]], rownames(mat_datExpr_macparland_scaled))
 
   # filter out mis-matches
   vec_pkMs <- vec_pkMs[!is.na(vec_idxRow)]
@@ -195,22 +194,22 @@ mat_scaled_embed <- sapply(vec_mods, function(mod) {
   
   #print(length(vec_pkMs)/2)
   # compute weighted sum of normalized and scaled expression
-  mat_datExpr_scaled[vec_idxRow,] %>% as.matrix -> mat_datExpr_scaled_sub
+  mat_datExpr_macparland_scaled[vec_idxRow,] %>% as.matrix -> mat_datExpr_macparland_scaled_sub
   
-  if (nrow(mat_datExpr_scaled_sub)==0) {
+  if (nrow(mat_datExpr_macparland_scaled_sub)==0) {
   warning(paste0(mod, ": no module genes found in datExpr"))
-  return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
-  } else if (nrow(mat_datExpr_scaled_sub)>0 & nrow(mat_datExpr_scaled_sub)<(length(vec_pkMs)/2)) {
-    warning(paste0(mod, ": only ", nrow(mat_datExpr_scaled_sub), " module genes detected"))
-    return(rep(NA_real_, ncol(mat_datExpr_scaled_sub)))
+  return(rep(NA_real_, ncol(mat_datExpr_macparland_scaled_sub)))
+  } else if (nrow(mat_datExpr_macparland_scaled_sub)>0 & nrow(mat_datExpr_macparland_scaled_sub)<(length(vec_pkMs)/2)) {
+    warning(paste0(mod, ": only ", nrow(mat_datExpr_macparland_scaled_sub), " module genes detected"))
+    return(rep(NA_real_, ncol(mat_datExpr_macparland_scaled_sub)))
   }
-  return(vec_pkMs %*% mat_datExpr_scaled_sub)
+  return(vec_pkMs %*% mat_datExpr_macparland_scaled_sub)
 
 })
 
-rownames(mat_scaled_embed) <- colnames(mat_datExpr_scaled)
+rownames(mat_scaled_embed_macparland) <- colnames(mat_datExpr_macparland_scaled)
 
-mat_scaled_embed[0:4,0:4]
+mat_scaled_embed_macparland[0:4,0:4]
 ```
 
 scale embeddings 
@@ -219,7 +218,7 @@ scale embeddings
 ## rescale the embeddings to standard deviation 1
 
 ```{r}
-mat_scaled_embed_rescaled <- scale(mat_scaled_embed, center=FALSE, scale=apply(mat_scaled_embed,2,sd,na.rm=T))
+mat_scaled_embed_macparland_rescaled <- scale(mat_scaled_embed_macparland, center=FALSE, scale=apply(mat_scaled_embed_macparland,2,sd,na.rm=T))
 ```
 
 ## add new embeddings to Seurat object
@@ -229,18 +228,18 @@ mat_scaled_embed_rescaled <- scale(mat_scaled_embed, center=FALSE, scale=apply(m
 <!-- ```{r} -->
 <!-- vec_mods_old <- unique(dt_geneMod_merged$module_filter) -->
 <!-- for (mod_old in vec_mods_old){  -->
-<!--   if (mod_old %in% colnames(seuratObj@meta.data)) { -->
-<!--     seuratObj[[mod_old]] <- NULL   -->
+<!--   if (mod_old %in% colnames(seuratObj_macparland@meta.data)) { -->
+<!--     seuratObj_macparland[[mod_old]] <- NULL   -->
 <!--   } -->
 <!-- } -->
 <!-- ``` -->
 
 ```{r}
-seuratObj <- AddMetaData(object=seuratObj, metadata = data.frame(row.names=rownames(mat_scaled_embed_rescaled), mat_scaled_embed_rescaled))
+seuratObj_macparland <- AddMetaData(object=seuratObj_macparland, metadata = data.frame(row.names=rownames(mat_scaled_embed_macparland_rescaled), mat_scaled_embed_macparland_rescaled))
 ```
 
 ```{r}
-saveRDS(object = seuratObj, file = path_seuratObj, compress = "gzip")
+saveRDS(object = seuratObj_macparland, file = path_seuratObj_macparland, compress = "gzip")
 ```
 
 next: liver_module_filter_prune.Rmd

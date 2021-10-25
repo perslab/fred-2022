@@ -113,7 +113,7 @@ create appropriate model matrices. The data should be a matrix with features
 (genes, transcripts, voxels) in the rows and samples in the columns.
 
 ```{r}
-mat_expr <- GetAssayData(seuratObj, slot="counts") %>% as.matrix 
+mat_expr <- GetAssayData(seuratObj, slot="counts") %>% as.matrix # the counts are corrected using the Pearson residuals
 ```
 
 <!-- The sva package assumes there are two types of variables that are being considered: -->

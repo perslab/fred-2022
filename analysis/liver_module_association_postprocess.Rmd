@@ -43,7 +43,8 @@ library("Matrix")
 library("parallel")
 #library("tidyverse")
 library("here")
-library("magrittr")
+#library("magrittr")
+library("dplyr")
 #library("AUCell")
 #library("ggplot2")
 #library("simpleboot")
@@ -132,18 +133,18 @@ dt_geneMod_gerhard2018 <- fread(path_geneMod_gerhard2018)
 ```{r}
 # dt_bootOut_stats_moylan2013 = fread(paste0(dirWGCNA_tables, prefixData, "_mod_fibrosis_assoc_in_moylan2013_201020.csv"))
 
-dt_bootOut_stats_gerhard2018 <- fread(paste0(dirWGCNA_tables, prefixData,"_mod_assoc_in_gerhard2018_201101.csv"))
+dt_bootOut_stats_gerhard2018 <- fread(paste0(dirWGCNA_tables, prefixData,"_mod_assoc_in_gerhard2018_201217.csv"))
 ```
 
 
-fix previous slipup in string renaming
-```{r}
-vec_number = str_split(string = dt_bootOut_stats_gerhard2018$module, pattern = "-") %>% sapply(., FUN=function(vec) vec[length(vec)])
+<!-- fix previous slipup in string renaming -->
+<!-- ```{r} -->
+<!-- vec_number = str_split(string = dt_bootOut_stats_gerhard2018$module, pattern = "-") %>% sapply(., FUN=function(vec) vec[length(vec)]) -->
 
-vec_rest = gsub("-\\d+$", "", dt_bootOut_stats_gerhard2018$module)
+<!-- vec_rest = gsub("-\\d+$", "", dt_bootOut_stats_gerhard2018$module) -->
 
-dt_bootOut_stats_gerhard2018$module = paste0(vec_rest, "_", vec_number)
-```
+<!-- dt_bootOut_stats_gerhard2018$module = paste0(vec_rest, "_", vec_number) -->
+<!-- ``` -->
 
 # analysis
 
@@ -246,6 +247,19 @@ list_dt_bootOut_stats_gerhard2018_sub_BH = lapply(unique(dt_bootOut_stats_gerhar
 dt_bootOut_stats_gerhard2018_BH = data.table::rbindlist(list_dt_bootOut_stats_gerhard2018_sub_BH)
 ```
 
+@Jon, can. you check how many modules survive assoc with the 3 Gerhard phenotypes if you do FDR across all three phenos?
+
+```{r}
+dt_bootOut_stats_gerhard2018_alt = dt_bootOut_stats_gerhard2018[condition %in% c("steatosis","lob_inflam","fibrosis")]
+dt_bootOut_stats_gerhard2018_alt$p.value_percentile_BH = p.adjust(dt_bootOut_stats_gerhard2018_alt$p.value_percentile, method = "BH")
+```
+
+```{r}
+dt_bootOut_stats_gerhard2018_alt[,j=sum(p.value_percentile_BH<0.025),by=condition]
+```
+
+
+
 <!-- moylan -->
 
 <!-- ```{r} -->
@@ -272,11 +286,12 @@ dt_bootOut_stats_gerhard2018_BH = data.table(dataset="gerhard2018",
 <!-- ``` -->
 
 ```{r}
-vec_mods_fibrosis_gerhard = unique(dt_bootOut_stats_gerhard2018_BH[p.value_percentile_BH<params$pValThreshold & condition=="fibrosis",module])
 
-vec_mods_fibrosis_severity_gerhard = unique(dt_bootOut_stats_gerhard2018_BH[p.value_percentile_BH<params$pValThreshold & condition=="fibrosis_severity",module])
+vec_mods_fibrosis_gerhard = unique(dt_bootOut_stats_gerhard2018_BH[p.value_percentile_BH<params$pValThreshold/2 & condition=="fibrosis",module])
 
-vec_mods_lob_inflam_gerhard = unique(dt_bootOut_stats_gerhard2018_BH[p.value_percentile_BH<params$pValThreshold & condition=="lob_inflam",module])
+vec_mods_fibrosis_severity_gerhard = unique(dt_bootOut_stats_gerhard2018_BH[p.value_percentile_BH<params$pValThreshold/2 & condition=="fibrosis_severity",module])
+
+vec_mods_lob_inflam_gerhard = unique(dt_bootOut_stats_gerhard2018_BH[p.value_percentile_BH<params$pValThreshold/2 & condition=="lob_inflam",module])
 ```
 
 <!-- ```{r} -->
@@ -288,13 +303,13 @@ vec_mods_lob_inflam_gerhard = unique(dt_bootOut_stats_gerhard2018_BH[p.value_per
 ```{r}
 
 # perslab modules
-dt_geneMod_perslab$cell_cluster_fibrosis_gerhard2018 = ifelse(dt_geneMod_perslab$module_renamed %in% vec_mods_fibrosis_gerhard, dt_geneMod_perslab$cell_cluster_pres, NA_character_)
+dt_geneMod_perslab$cell_cluster_fibrosis_gerhard2018 = ifelse(gsub("-","_", dt_geneMod_perslab$module_renamed) %in% vec_mods_fibrosis_gerhard, dt_geneMod_perslab$cell_cluster_pres, NA_character_)
 
-dt_geneMod_perslab$module_fibrosis_gerhard2018 = ifelse(dt_geneMod_perslab$module_renamed %in% vec_mods_fibrosis_gerhard, dt_geneMod_perslab$module_renamed, NA_character_)
+dt_geneMod_perslab$module_fibrosis_gerhard2018 = ifelse(gsub("-","_",dt_geneMod_perslab$module_renamed) %in% vec_mods_fibrosis_gerhard, dt_geneMod_perslab$module_renamed, NA_character_)
 
-dt_geneMod_perslab$cell_cluster_lob_inflam_gerhard2018 = ifelse(dt_geneMod_perslab$module_renamed %in% vec_mods_lob_inflam_gerhard, dt_geneMod_perslab$cell_cluster_pres, NA_character_)
+dt_geneMod_perslab$cell_cluster_lob_inflam_gerhard2018 = ifelse(gsub("-","_",dt_geneMod_perslab$module_renamed) %in% vec_mods_lob_inflam_gerhard, dt_geneMod_perslab$cell_cluster_pres, NA_character_)
 
-dt_geneMod_perslab$module_lob_inflam_gerhard2018 = ifelse(dt_geneMod_perslab$module_renamed %in% vec_mods_lob_inflam_gerhard, dt_geneMod_perslab$module_renamed, NA_character_)
+dt_geneMod_perslab$module_lob_inflam_gerhard2018 = ifelse(gsub("-","_",dt_geneMod_perslab$module_renamed) %in% vec_mods_lob_inflam_gerhard, dt_geneMod_perslab$module_renamed, NA_character_)
 # 
 # dt_geneMod_perslab$cell_cluster_fibrosis_moylan2013 = ifelse(gsub("-", "_", dt_geneMod_perslab$module_renamed) %in% vec_mods_fibrosis_moylan, dt_geneMod_perslab$cell_cluster_pres, NA_character_)
 # 
@@ -332,10 +347,10 @@ dt_geneMod_gerhard2018$module_lob_inflam_gerhard2018 = ifelse( dt_geneMod_gerhar
 
 ```{r}
 all.equal(colnames(dt_geneMod_perslab),colnames(dt_geneMod_gerhard2018))
-#[1] TRUE
+#[1] "2 string mismatches"
 
 #all.equal(colnames(dt_geneMod_perslab),colnames(dt_geneMod_moylan2013))
-#[1] TRUE
+#[1] "2 string mismatches"
 ```
 
 ## write files to disk 
@@ -361,11 +376,11 @@ openxlsx::write.xlsx(dt_bootOut_stats_gerhard2018_BH, file=paste0(dirWGCNA_table
 ```{r}
 fwrite(dt_geneMod_perslab, file="/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz", compress="gzip")
 
-# openxlsx::write.xlsx(x = dt_geneMod_perslab, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.xlsx")
+openxlsx::write.xlsx(x = dt_geneMod_perslab, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.xlsx")
 
 fwrite(dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz", compress="gzip")
 
-# openxlsx::write.xlsx(x = dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.xlsx")
+openxlsx::write.xlsx(x = dt_geneMod_gerhard2018, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.xlsx")
 # 
 # fwrite(dt_geneMod_moylan2013, file = "/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_moylan2013_wgcna1_geneMod.csv.gz", compress="gzip")
 

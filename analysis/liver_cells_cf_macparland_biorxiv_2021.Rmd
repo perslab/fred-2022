@@ -1,0 +1,234 @@
+---
+title: 'Liver - compare NASH with Payen et al liver scRNA seq data'
+author: "Jon Thompson, Pers lab, rkm916 at ku dot dk"
+date: "`r Sys.time()`" 
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+params: 
+  date: !r substr(gsub("-","",as.character(Sys.Date())),3,1000)
+  randomSeed: !r 12345
+  pValThreshold: !r 0.05
+# output:
+#   html_notebook:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+#   html_document:
+#     df_print: paged
+#     number_sections: yes
+#     toc: yes
+#     toc_depth: 3
+#     toc_float: yes
+---
+
+# setup
+
+## Load packages
+
+```{r}
+
+library("Seurat")
+library("data.table")
+library("Matrix")
+library("parallel")
+library("dplyr")
+library("ggplot2")
+library("here")
+library("tidyr")
+# library("cluster")
+# library("parallelDist")
+
+# Set options
+
+
+options(stringsAsFactors = F, 
+        use="pairwise.complete.obs", 
+        warn=1, 
+        verbose=F,
+        boot.parallel="multicore", # see ?boot: each worker process inherits the environment of the current session, including the workspace and the loaded namespaces and attached packages (but not the random number seed: see below). 
+        boot.ncpus = 20,
+        mc.cores=40 # for parallel computation
+        ) 
+
+# data.table
+setDTthreads(threads = NULL, 
+             restore_after_fork = NULL)
+getDTthreads()
+
+#options(datatable.WhenJisSymbolThenCallingScope=TRUE)
+
+
+randomSeed = 12345
+set.seed(randomSeed)
+
+npcs=40
+pval.adjust.method = "BH"
+pValThreshold = 0.05#params$pValThreshold
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+# maxit = 100 # for rlm, see users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf
+flagDate =substr(gsub("-","",as.character(Sys.Date())),3,1000)
+
+prefixData = "liver_perslab_int"
+prefixRun = "seurat_7"
+```
+
+## load 
+
+```{r}
+#seuratObj_sub <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj_macroph.RDS.gz"))
+seuratObj <- readRDS(here("output","liver_perslab_int_seurat_7_SCTint_perslab_labels_seuratObj.RDS.gz"))
+```
+
+```{r}
+dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_perslab_int_wgcna3_geneMod.csv.gz")
+#head(dt_geneMod_perslab)
+```
+
+```{r}
+vec_geneWeights_M_HSC_2 = dt_geneMod_perslab[module_renamed == "Hepatic-stellate-cells_2",pkMs]
+names(vec_geneWeights_M_HSC_2) <- dt_geneMod_perslab[module_renamed == "Hepatic-stellate-cells_2",genes]
+vec_geneWeights_M_HSC_2 <- vec_geneWeights_M_HSC_2/sum(vec_geneWeights_M_HSC_2)
+```
+
+```{r}
+# from suppl materials media-3.pdf
+# page 30
+vec_genes_HSC_activated_top <- c("ACTA2", "COL1A1", "TGFB")
+
+# Why is TGFB not in the full list in the dot plot? also, it is missing in our data
+# Extended Fig. 21
+
+vec_genes_HSC_activated_full <- c("ACTA2","FN1","SPARC","SPARCL1","TAGLN", "VIM", "MYL9", "ACTG1","SPON2","VCL","ITGAV","COL1A1","COL5A2","COL4A1", "COL3A1", "COL1A2", "COL5A3", "COL4A2", "ACTB", "DDR2", "BGN","GAS6", "SERPINH1","TNFRSF10A","CCDC88A","PFKP","PKM","SLC16A3", "LDHA", "GLS", "LIPA", "ALOX5", "HIF1A", "MMP23B", "MMP14", "MMP15", "TIMP1", "TIMP2", "TIMP3", "ATG10", "ATG7", "ATG14", "ADAMTS1", "ADAMTSL2", "ADAMTS2", "PCOLCE2", "CTSK", "PDE4D", "SREBF1", "SCAP", "SMAD3", "CELF2", "PID1", "LGALS3", "SMO", "PTCH1", "PPARD","FOXO1", "PTEN")
+
+vec_genes_HSC_collagen <- c("COL1A1","COL5A2", "COL4A1", "COL3A1", "COL1A2", "COL5A3", "COL4A2", "ACTB")
+
+vec_genes_HSC_glycolysis <- c("PFKP","PKM","SLC16A3", "LDHA", "GLS", "LIPA", "ALOX5")
+
+vec_genes_HSC_matrix_remodelling <- c("MMP23B", "MMP14", "MMP15", "TIMP1", "TIMP2", "TIMP3")
+
+vec_genes_HSC_autophagy <- c("ATG10", "ATG7", "ATG14")
+
+vec_genes_HSC_fib <- c("AEBP1","SPP1","IL33", "ICAM1", "VCAM1","CTGF","TGFB1", "TGFBR1", "TGFBR2", "SMAD2", "SMAD3", "AGT","AGTR1","VEGFA", "VEGFB","FLT1","KDR","IGF1","PDGFA","PDGFC", "PDGFD", "PDGFRA","PDGFRB", "JAG1")
+
+vec_genes_HSC_inflam = c("IFNLR1","INFGR1","IFNAR1","IFNGR2","C5AR1","LBP","MYD88","CD14","TLR1","TLR2","IL18R1","IL17RE","IL17RB", "IL17RC", "IL1RAP", "IL4R", "IL6R","IL27RA", "IL22RA1", "IL15RA", "IRF7", "CSF1","TNFSF10","IL17RA","IL32","IL18", "CXCL8", "CCDC88A","SMAD7","ILR1", "NLRP1", "R2RX7", "NLRC5", "CCL2", "CXCL2", "CCL5","PSTPIP1","CXCL1", "CCL28","CX3CL1","CCL4","CXCL12", "CXCL16", "IL15","IL7","IL16","IL6ST","CD274","ICAM1","VCAM1")
+
+vec_genes_HSC_resolution = c("FAS","CEBPA","MICA","IGFBP5","PPARG","PPARA","GATA4", "KLF2", "SOCS3","TP53","ICAM1","IL10RB","IL22RA1")
+
+vec_geneWeights_activated_top <- rep(1/length(vec_genes_HSC_activated_top), length(vec_genes_HSC_activated_top))
+names(vec_geneWeights_activated_top) <- vec_genes_HSC_activated_top
+
+vec_geneWeights_activated_full = rep(1/length(vec_genes_HSC_activated_full), length(vec_genes_HSC_activated_full))
+names(vec_geneWeights_activated_full) = vec_genes_HSC_activated_full
+
+vec_geneWeights_HSC_collagen <- rep(1/length(vec_genes_HSC_collagen),length(vec_genes_HSC_collagen))
+names(vec_geneWeights_HSC_collagen) <- vec_genes_HSC_collagen
+
+vec_geneWeights_HSC_glycolysis <- rep(1/length(vec_genes_HSC_glycolysis),length(vec_genes_HSC_glycolysis))
+names(vec_geneWeights_HSC_glycolysis) <- vec_genes_HSC_glycolysis
+
+vec_geneWeights_HSC_matrix_remodelling <- rep(1/length(vec_genes_HSC_matrix_remodelling),length(vec_genes_HSC_matrix_remodelling))
+names(vec_geneWeights_HSC_matrix_remodelling) <- vec_genes_HSC_matrix_remodelling
+
+vec_genesWeights_HSC_autophagy <- rep(1/length(vec_genes_HSC_autophagy), length(vec_genes_HSC_autophagy))
+names(vec_genesWeights_HSC_autophagy) <- vec_genes_HSC_autophagy
+
+vec_geneWeights_HSC_fib = rep(1/length(vec_genes_HSC_fib), length(vec_genes_HSC_fib))
+names(vec_geneWeights_HSC_fib) = vec_genes_HSC_fib
+
+vec_geneWeights_inflam <- rep(1/length(vec_genes_HSC_inflam),length(vec_genes_HSC_inflam))
+names(vec_geneWeights_inflam) <- vec_genes_HSC_inflam
+
+vec_geneWeights_resoution <- rep(1/length(vec_genes_HSC_resolution), length(vec_genes_HSC_resolution))
+names(vec_geneWeights_resoution) <- vec_genes_HSC_resolution
+
+```
+
+```{r}
+seu_HSC <- subset(seuratObj, subset=cluster_perslab_coarse=="Hepatic-stellate-cells")
+```
+
+```{r}
+DefaultAssay(seu_HSC) <- "SCT_combat"
+
+seu_HSC <- seu_HSC %>% FindVariableFeatures %>% RunPCA(., npcs=npcs, seed.use=randomSeed) %>% RunUMAP(., dims=1:npcs, seed.use = randomSeed)
+```
+
+# next: embed the genes, look for overlaps with M-HSC-2, and with our cluster DE genes
+
+```{r}
+
+list_vec_geneWeights = list(
+  "M_HSC_2"=vec_geneWeights_M_HSC_2, 
+  "HSC_activated_DEgenes_top3" = vec_geneWeights_activated_top, 
+  "HSC_activated_DEgenes" = vec_geneWeights_activated_full, 
+  "HSC_fibrosis_DEgenes" = vec_geneWeights_HSC_fib,
+  "HSC_inflammation_DEgenes"=vec_geneWeights_inflam,
+  "HSC_resolution_DEgenes"= vec_geneWeights_resoution,
+  "HSC_collagen_genes" = vec_geneWeights_HSC_collagen,
+  "HSC_glycolysis_genes" = vec_geneWeights_HSC_glycolysis,
+  "HSC_matrix_remodelling_genes" = vec_geneWeights_HSC_matrix_remodelling,
+  "HSC_authophagy_genes" = vec_genesWeights_HSC_autophagy 
+  )
+```
+
+```{r}
+for (name in names(list_vec_geneWeights)) {
+  print(paste0("geneset: ", name))
+  seu_HSC[[name]] <- compute_embeddings(mat_datExpr=seu_HSC@assays$SCT_combat@counts, vec_geneWeights = list_vec_geneWeights[[name]], min_feats_present = 2)
+}
+```
+
+# featureplots
+
+```{r}
+FeaturePlot(seu_HSC, features = "M_HSC_2", order = T, max.cutoff = 3)
+```
+
+```{r}
+list_featureplot <- lapply(names(list_vec_geneWeights), function(name) {
+  FeaturePlot(seu_HSC, features = name, order=T, max.cutoff = 2)
+})
+```
+
+# scatterplots 
+
+```{r}
+list_scatterplots <- lapply(names(list_vec_geneWeights), function(name) {
+  Seurat::FeatureScatter(seu_HSC, feature1="M_HSC_2", feature2= name)  
+})
+```
+
+# what gene overlaps?
+
+```{r}
+table(names(vec_geneWeights_M_HSC_2) %in% names(vec_geneWeights_activated_full))
+# [1] 12
+```
+
+```{r}
+table(names(vec_geneWeights_M_HSC_2) %in% vec_genes_HSC_collagen)
+# FALSE  TRUE 
+#    71     6 
+```
+
+```{r}
+table(names(vec_geneWeights_M_HSC_2) %in% vec_genes_HSC_matrix_remodelling)
+# FALSE  TRUE 
+#    75     2 
+names(vec_geneWeights_M_HSC_2)[names(vec_geneWeights_M_HSC_2) %in% vec_genes_HSC_matrix_remodelling]
+```
+```{r}
+table(names(vec_geneWeights_M_HSC_2) %in% names(vec_geneWeights_HSC_fib))
+# [1] 1
+```
+
+```{r}
+table(names(vec_geneWeights_M_HSC_2) %in% names(vec_geneWeights_inflam))
+# [1] 0
+```
