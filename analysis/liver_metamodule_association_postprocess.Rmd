@@ -26,8 +26,7 @@ params:
 ---
 
 Previous: 
-liver_module_association_moylan2013.Rmd
-liver_module_association_gerhard2018.Rmd
+liver_metamodule_association_gerhard2018.Rmd
 
 # Setup
 
@@ -132,18 +131,18 @@ dt_geneMod_perslab <- fread(path_geneMod_perslab)
 ```{r}
 # dt_bootOut_stats_moylan2013 = fread(paste0(dirWGCNA_tables, prefixData, "_mod_fibrosis_assoc_in_moylan2013_201020.csv"))
 
-dt_bootOut_stats_gerhard2018 <- fread(paste0(dirWGCNA_tables, prefixData, "_metamod_assoc_in_gerhard2018_201102.csv"))
+dt_bootOut_stats_gerhard2018 <- fread(paste0(dirWGCNA_tables, prefixData, "_metamod_assoc_in_gerhard2018_201111.csv"))
 ```
 
 
-fix previous slipup in string renaming
-```{r}
-vec_number = str_split(string = dt_bootOut_stats_gerhard2018$module, pattern = "-") %>% sapply(., FUN=function(vec) vec[length(vec)])
+<!-- fix previous slipup in string renaming -->
+<!-- ```{r} -->
+<!-- vec_number = str_split(string = dt_bootOut_stats_gerhard2018$module, pattern = "-") %>% sapply(., FUN=function(vec) vec[length(vec)]) -->
 
-vec_rest = gsub("-\\d+$", "", dt_bootOut_stats_gerhard2018$module)
+<!-- vec_rest = gsub("-\\d+$", "", dt_bootOut_stats_gerhard2018$module) -->
 
-dt_bootOut_stats_gerhard2018$module = paste0(vec_rest, "_", vec_number)
-```
+<!-- dt_bootOut_stats_gerhard2018$module = paste0(vec_rest, "_", vec_number) -->
+<!-- ``` -->
 
 # analysis
 

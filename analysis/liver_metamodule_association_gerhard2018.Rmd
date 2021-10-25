@@ -267,8 +267,8 @@ list_dt_bootOut_stats <- lapply(names(list_list_bootOut), function(condition) {
        "confInt_upper_percentile"=confInt_upper_percentile,
        "confInt_lower_norm"=confInt_lower_norm,
        "confInt_upper_norm"=confInt_upper_norm,
-       "p.value_percentile" = max(0.5,min(sum(mat_boot_replicates[,idx_col]>0), sum(mat_boot_replicates[,idx_col]<0)))*2/R,
-       "p.value_norm" = pnorm(q=abs(bootMean), mean=0, sd=bootSE, lower.tail = F)*2)
+        "p.value_percentile" = ifelse(bootOut$t0[idx_col]>0,  max(1,sum(mat_boot_replicates[,idx_col]<=0))/R, max(1, sum(mat_boot_replicates[,idx_col]>=0))/R),
+       "p.value_norm" = pnorm(q=abs(bootMean), mean=0, sd=bootSE, lower.tail = F))
     }, error = function(err) {
       warning(paste0(module, ": ", err))
       c("estimate_original"=NA_real_,
@@ -294,7 +294,7 @@ list_dt_bootOut_stats <- lapply(names(list_list_bootOut), function(condition) {
     
   #dt_bootOut_stats[,p.value_percent_BH:=p.adjust(p.value_percent,method = params$pAdjMethod)]
   #dt_bootOut_stats[,p.value_born_BH:=p.adjust(p.value_norm, method = params$pAdjMethod)]
-  colnames(dt_bootOut_stats)[3]="estimate_original" # for some reason, it appends ".condition" to these column names
+   colnames(dt_bootOut_stats) = gsub("\\.condition\\d*$", "", colnames(dt_bootOut_stats)) # for some reason, it appends ".condition" to these column names
   return(dt_bootOut_stats)
 })
 

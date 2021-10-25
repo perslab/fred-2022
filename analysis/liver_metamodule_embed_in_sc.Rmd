@@ -24,7 +24,9 @@ params:
 #     toc_float: yes
 ---
 
-add cell embeddings on prioritised modules to metadata
+add metamodule cell embeddings to seurat metadata
+
+NOT UPDATED FULLY
 
 # Setup
 
@@ -118,45 +120,33 @@ dt_geneMod_perslab <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables
 head(dt_geneMod_perslab)
 ```
 
-<!-- ```{r} -->
-<!-- dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz") -->
-<!-- head(dt_geneMod_gerhard2018) -->
-<!-- ``` -->
+```{r}
+dt_geneMod_gerhard2018 <- fread("/projects/jonatan/pub-perslab/18-liver-wgcna/tables/liver_gerhard2018_wgcna3_geneMod.csv.gz")
+head(dt_geneMod_gerhard2018)
+```
 
 
 ```{r}
 DefaultAssay(seuratObj) <- "SCT_combat"
 ```
 
-retrieve module embeddings
-
-TODO: Need to translate old to new module names
-```{r}
-vec_mods_perslab = dt_geneMod_perslab[["module_renamed"]] %>% unique 
-
-vec_mods_perslab <- vec_mods_perslab[nchar(vec_mods_perslab)>0]
-```
-
+retrieve module embeddings from seuratObj
 
 ```{r}
-
-df_scaled_embed = seuratObj@meta.data[,gsub("\\.","-",colnames(seuratObj@meta.data)) %in% vec_mods_perslab]
-
-mat_scaled_embed = df_scaled_embed %>% as.matrix
-colnames(mat_scaled_embed) <- gsub("\\.","-",colnames(mat_scaled_embed))
-mat_scaled_embed[0:4,0:20]
+mat_scaled_embed_sc = seuratObj@meta.data[,colnames(seuratObj@meta.data) %in% unique(dt_geneMod_perslab$module_renamed)]
 ```
 
 
 ### compute metamodule embeddings in sc data by taking weighted sums of the module embeddings
 
 ```{r}
-dt_geneMod_perslab[["module_renamed"]] -> vec_mods
-names(vec_mods) = dt_geneMod_perslab[[colModule]]
+vec_mods <- dt_geneMod_perslab[["module_renamed"]]
+names(vec_mods) = dt_geneMod_perslab[["module_meta"]]
+vec_mods <- vec_mods[!duplicated(vec_mods)]
 vec_mods <- vec_mods[!is.na(vec_mods) & nchar(vec_mods)>0]
 vec_mods <- vec_mods[!duplicated(vec_mods)]
 #vec_mods = gsub("-","_", vec_mods)
-names(vec_mods) %>% unique -> vec_mods_meta
+names(vec_mods) %>% unique %>% sort -> vec_mods_meta
 ```
 
 ```{r}
@@ -167,7 +157,7 @@ mat_embed_meta = sapply(vec_mods_meta, function(mod_meta) {
   vec_weights = sapply(vec_mods_in_mod_meta, function(each_mod) {sum(dt_geneMod_perslab[["module_renamed"]]==each_mod)})
   vec_weights = vec_weights/sum(vec_weights)
   names(vec_weights) = vec_mods_in_mod_meta
-  mat_tmp = mat_scaled_embed[,vec_mods_in_mod_meta]
+  mat_tmp = mat_scaled_embed_sc[,vec_mods_in_mod_meta]
   if (!is.null(dim(mat_tmp))) {
       # scale the columns of the embeddings matrix by number of genes and take the mean across modules
     mat_tmp = sapply(colnames(mat_tmp), function(each_mod) mat_tmp[,each_mod]*vec_weights[each_mod])
@@ -178,13 +168,10 @@ mat_embed_meta = sapply(vec_mods_meta, function(mod_meta) {
 })
 
 mat_embed_meta[0:3,0:3]
-
-
 ```
 
 ```{r}
 sd(mat_embed_meta[,1])
-
 ```
 
 the metamodules have much lower variance than the modules. 
@@ -197,20 +184,9 @@ mat_embed_meta_rescaled <- scale(mat_embed_meta, center=F, scale= apply(mat_embe
 ## add new embeddings to Seurat object
 
 ```{r}
-seuratObj <- AddMetaData(object=seuratObj, metadata = data.frame(row.names=rownames(mat_embed_meta_rescaled), mat_embed_meta_rescaled))
+seuratObj <- AddMetaData(object=seuratObj, metadata = data.frame(row.names=rownames(seuratObj@meta.data), mat_embed_meta_rescaled))
 ```
-
-
-
-
-
-
 
 ```{r}
 saveRDS(object = seuratObj, file = path_seuratObj, compress = "gzip")
 ```
-
-
-
-
-

@@ -362,10 +362,8 @@ list_gaussResGO <- lapply(list_vec_modmetagenes, function(vec_modGenes) {
 ```{r}
 vec_module_GERR_GO <- rep(names(list_gaussResGO), sapply(list_gaussResGO, function(gaussRes) {gaussRes$selected_pathways_names %>% length}))
 
-<!-- ```{r} -->
-<!-- vec_cell_cluster <- dt_metadataAssoc[,cell_cluster,][match(vec_module,dt_metadataAssoc[,module,] )] -->
-<!-- ``` -->
 
+#vec_cell_cluster <- dt_metadataAssoc[,cell_cluster,][match(vec_module,dt_metadataAssoc[,module,] )] 
 vec_coef_GO = lapply(list_gaussResGO, function(x) x[["selected_pathways_coef"]])  %>% unlist(use.names = F)
 
 
