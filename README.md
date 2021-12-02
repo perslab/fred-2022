@@ -1,6 +1,6 @@
-# Fred et al. 2021 NASH project
+# Fred et al. 2022 
 
-This repo contains the code used for the Fred et al. 2021 study into Nonalcoholic Steatohepatitis (NASH).
+This repo contains the code used for the Fred et al. 2022 study into Nonalcoholic Steatohepatitis (NASH).
 
 The analysis was done in R, mostly in the markdown notebooks in ./analysis, as well as in a few .R scripts in ./code.
 
